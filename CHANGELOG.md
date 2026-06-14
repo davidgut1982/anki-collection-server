@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (Step 7 — review_session.py)
+
+- `src/review_session.py`: Headless gui* review-session state machine — replaces
+  Anki's Qt GUI reviewer.  `ReviewSessionManager` holds per-deck session state and
+  implements the six ``gui*`` AnkiConnect actions required by the tilts einki client:
+
+  - **`guiDeckReview` {name}** — resolves deck via `col.decks.id_for_name`, calls
+    `col.decks.select(deck_id)` to scope the scheduler, creates/resets the session.
+    Returns `True`.
+
+  - **`guiCurrentCard` {}** — calls `col.sched.get_queued_cards(fetch_limit=1)`;
+    renders HTML via `card.render_output()` (`.question_text`, `.answer_text`, `.css`);
+    derives buttons (`[1,2,3,4]` for review cards, `[1,3,4]` for new/learning) and
+    `nextReviews` (parallel list from `col.sched.describe_next_states(qc.states)`);
+    builds `fields: {name: {value, order}}` matching `notesInfo` format; stores
+    `current_card_id` + `current_states` (SchedulingStates protobuf) in the session for
+    the answer step.  Returns the full payload or `None` when queue is empty.
+
+  - **`guiStartCardTimer` {}** — records `timer_started_at`; no-op in headless flow.
+    Returns `True`.
+
+  - **`guiShowAnswer` {}** — pure no-op (headless renders both sides in guiCurrentCard).
+    Returns `True`.
+
+  - **`guiAnswerCard` {ease}** — maps ease 1–4 to `CardAnswer.Rating` (AGAIN=0,
+    HARD=1, GOOD=2, EASY=3); calls `card.start_timer()` if `timer_started` is `None`
+    (required by `build_answer` → `card.time_taken()`); calls
+    `col.sched.build_answer(card, states, rating)` → `col.sched.answer_card(answer)`;
+    clears `current_card_id` so next `guiCurrentCard` fetches the next card.
+    Raises `RuntimeError` on stale submit (no active card in session).
+
+  - **`guiUndo` {}** — calls `col.undo()`; resets `current_card_id` and re-selects
+    deck so the un-done card re-surfaces on the next `guiCurrentCard`.
+    Returns `True` on success, `False` if nothing to undo.
+
+  Exports `GUI_ACTIONS: dict[str, Callable]` for merging into the server dispatch table.
+
+  **CardAnswer.Rating enum confirmed for anki 25.9.2** (`anki.scheduler_pb2`):
+  `AGAIN=0`, `HARD=1`, `GOOD=2`, `EASY=3` (0-indexed, not 1–4).
+
+  **`card.timer_started` behaviour**: `build_answer` calls `card.time_taken()` which
+  requires `card.timer_started` to be set via `card.start_timer()`.  Without this call
+  the scheduler raises `TypeError: unsupported operand type(s) for -: 'float' and
+  'NoneType'`.  Fixed by calling `card.start_timer()` in `gui_answer_card` if
+  `timer_started is None`.
+
+- `tests/test_review_session.py`: 27 integration tests against a `/tmp` copy of the
+  static backup (SM-2 collection). Coverage:
+  - `guiDeckReview` selects a real deck and rejects unknown decks.
+  - `guiCurrentCard` payload: all 12 required keys, buttons length matches card type,
+    `nextReviews` parallel to `buttons`, non-empty HTML question/answer, idempotency.
+  - Full flip→grade loop (`guiCurrentCard` → `guiShowAnswer` → `guiAnswerCard(3)` →
+    next `guiCurrentCard` returns different card or None).
+  - `guiUndo` after a grade restores the answered card.
+  - FSRS mode: enable `fsrs=True` + compute params; `guiCurrentCard` still returns
+    valid `nextReviews` under FSRS scheduler.
+  - Stale protection: `guiAnswerCard` without prior `guiCurrentCard` raises
+    `RuntimeError`; double-answer raises; ease=0 raises `ValueError`.
+
+  All 27 pass (0.61 s); 55 total tests pass across all test files (1 skipped —
+  unrelated cross-process lock test).
+
 ### Fixed (critic HIGH/MEDIUM — actions.py)
 
 - **`addNote` duplicate detection** (`_add_note`): `col.add_note()` in anki 25.9.2
