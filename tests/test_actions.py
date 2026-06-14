@@ -12,6 +12,7 @@ Backup: /mnt/data/apps/anki/collection_backup_pre_audio_gen_20260530_235304.anki
 from __future__ import annotations
 
 import base64
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -28,9 +29,10 @@ from src.actions import ACTIONS
 # Path to the static backup (never modified)
 # ---------------------------------------------------------------------------
 
-BACKUP = Path(
+_DEFAULT_BACKUP = (
     "/mnt/data/apps/anki/collection_backup_pre_audio_gen_20260530_235304.anki2"
 )
+BACKUP = Path(os.environ.get("ANKI_TEST_BACKUP", _DEFAULT_BACKUP))
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +44,16 @@ BACKUP = Path(
 def backup_copy() -> Generator[Path, None, None]:
     """Copy the backup to /tmp once; yield the path; clean up after session."""
     if not BACKUP.exists():
-        pytest.skip(f"Backup not found: {BACKUP}")
+        pytest.fail(
+            f"Test backup not found: {BACKUP}. "
+            f"Set ANKI_TEST_BACKUP env var to a readable .anki2 file."
+        )
+    if not os.access(BACKUP, os.R_OK):
+        pytest.fail(
+            f"Test backup not accessible (permission denied): {BACKUP}. "
+            f"Set ANKI_TEST_BACKUP env var to a readable .anki2 file "
+            f"(e.g. ANKI_TEST_BACKUP=/tmp/anki-test-backup.anki2)."
+        )
 
     tmpdir = Path(tempfile.mkdtemp(prefix="acs-test-", dir="/tmp"))
     col_path = tmpdir / "collection.anki2"

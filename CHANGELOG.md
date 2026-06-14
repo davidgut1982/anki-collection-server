@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Step 5: server.py full wiring (collection startup + dispatch + graceful shutdown)
+
+- `src/server.py`: upgraded from the Step-2 stub to the production AnkiConnect server.
+
+  **Startup:**
+  `_open_collection_or_exit()` is called before waitress starts accepting
+  requests.  The collection path comes from `ANKI_COLLECTION_PATH` env var
+  (default: `/config/.local/share/Anki2/User 1/collection.anki2`).
+  On any failure (`FileNotFoundError`, `RuntimeError` for lock contention or
+  corrupt file, any other exception) the error is logged at CRITICAL level and
+  the process exits with code 1.  This prevents Docker from entering a silent
+  restart-loop — fail fast, log clearly.
+
+  **Graceful shutdown:**
+  `SIGTERM` and `SIGINT` are caught by `_shutdown()`, which calls
+  `CollectionManager.close()` (flushes WAL, releases SQLite handle, removes
+  the fcntl advisory lockfile) then `sys.exit(0)`.  Confirmed from logs:
+  `Received SIGTERM — closing collection and shutting down.` →
+  `Collection closed.` → `fcntl lock released:` → `Collection closed cleanly.`
+  A subsequent container run on the same collection copy starts without
+  "already locked" errors.
+
+  **Dispatch table:**
+  `DISPATCH = {**ACTIONS, **GUI_ACTIONS, **SYNC_ACTIONS, **FSRS_ACTIONS}` —
+  all four action dicts merged at import time.  `POST /` parses the
+  AnkiConnect envelope `{action, params, version, apiKey}`;  `version` and
+  `apiKey` are accepted and silently ignored (wire-compatible with real
+  AnkiConnect clients).  Every dispatch call is wrapped in
+  `col_mod._col_lock` for defense-in-depth.
+
+  **Wire-protocol error handling:**
+  - Unknown action → `{"result": null, "error": "unsupported action: <name>"}` (HTTP 200, logged at WARNING).
+  - Handler exception → `{"result": null, "error": "<str(exc)>"}` (HTTP 200, full traceback logged at ERROR).
+  - Success → `{"result": <value>, "error": null}` (HTTP 200).
+
+  **`GET /health`:**
+  Delegates to `CollectionManager.health()` (card_count, note_count, status,
+  collection_path).  Returns HTTP 200 when healthy; HTTP 503 when the
+  collection is not open (RuntimeError) or when the SQLite probe fails.
+
+- `src/collection.py` — `_col_lock` changed from `threading.Lock` to
+  `threading.RLock` (reentrant lock).
+
+  **Why:** the server dispatch layer acquires `_col_lock` around every handler
+  call for defense-in-depth; individual handlers (in `actions.py`,
+  `review_session.py`, etc.) also acquire it for multi-step mutation sequences.
+  A plain `Lock` blocks forever when the same thread tries to re-acquire it
+  (deadlock on any `gui*` or write action).  `RLock` allows the same thread to
+  re-enter without blocking — no behaviour change when threads=1 and no
+  cross-thread contention.
+
+- `tests/test_actions.py` — `BACKUP` path now reads `ANKI_TEST_BACKUP` env
+  var (with the canonical path as fallback), matching the pattern already used
+  by `test_fsrs.py`, `test_review_session.py`, and `test_sync.py`.  `pytest.skip`
+  replaced with `pytest.fail` (loud failure rather than silent green) and an
+  explicit `os.access(BACKUP, os.R_OK)` check added, consistent with
+  `test_review_session.py`.  This allows running the full suite as any UID with
+  a readable copy at `/tmp/anki-test-backup.anki2`.
+
+### Fixed — Step 5
+
+- **Deadlock on gui* and write actions (CRITICAL):** The dispatch layer wrapped
+  every handler call in `col_mod._col_lock` (a `threading.Lock`).  Handlers
+  that internally re-acquire the same lock (all `gui*` actions in
+  `review_session.py`, all write actions in `actions.py`) would block forever
+  on the inner acquisition — the server appeared to hang with no log output and
+  waitress logged "Task queue depth is 1".  Fix: `threading.Lock` →
+  `threading.RLock` in `collection.py`.  RLock tracks the owning thread and
+  allows the same thread to re-enter; other threads still block as expected.
+
+- **Duplicate "Opening collection" log line:** `_open_collection_or_exit()` no
+  longer logs the path itself; `CollectionManager.open()` already logs it.
+  Removes the double `INFO Opening collection: …` line from startup output.
+
 ### Fixed (critic hardening — sync.py + fsrs.py)
 
 - **fsrs.py — assert stripped under -O (HIGH):** Replaced `assert col.get_config("fsrs") is True`

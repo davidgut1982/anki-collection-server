@@ -63,7 +63,14 @@ _DEFAULT_COLLECTION_PATH = "/config/.local/share/Anki2/User 1/collection.anki2"
 # Serialise all collection access when needed.  With waitress threads=1 this
 # is never actually contended, but it costs nothing and keeps the door open
 # for future configuration changes.
-_col_lock: threading.Lock = threading.Lock()
+#
+# RLock (reentrant) rather than Lock: the server dispatch layer acquires this
+# lock around every handler call for defense-in-depth; individual handlers
+# (in actions.py, review_session.py, etc.) also acquire it for multi-step
+# mutation sequences.  An RLock allows the SAME thread to re-acquire it
+# without deadlocking — a plain Lock would block forever on the inner
+# acquisition.
+_col_lock: threading.RLock = threading.RLock()
 
 
 # ---------------------------------------------------------------------------
