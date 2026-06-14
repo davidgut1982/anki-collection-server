@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `src/collection.py`: `CollectionManager` class and module-level singleton
+  (`manager`).
+  - `manager.open(path)` opens `anki.Collection` from `ANKI_COLLECTION_PATH`
+    env var (default `/config/.local/share/Anki2/User 1/collection.anki2`).
+  - `manager.close()` closes the collection and releases the lock; idempotent.
+  - `manager.col` property raises `RuntimeError` if not yet opened.
+  - `manager.save()` explicit flush helper (anki auto-saves on close).
+  - `manager.health()` returns `{"status","collection_path","card_count","note_count"}`
+    with a `SELECT 1` liveness probe; used by `GET /health` (Step 5).
+  - `get_col()` module-level convenience function for other modules.
+  - `_col_lock` module-level `threading.Lock` for optional serialisation.
+  - fcntl advisory lock (`LOCK_EX|LOCK_NB`) on `<collection>.server.lock`
+    acquired at open and released on close; second open (same or different
+    process) raises immediately with a clear message.
+  - Lazy `from anki.collection import Collection` import so module-level import
+    does not require anki installed (enables mocking in tests).
+
 ### Changed
 - **WSGI server**: replaced Flask built-in dev server with `waitress==3.0.2`
   (`threads=1`, mandatory for single-writer SQLite). The Flask `app` object is
