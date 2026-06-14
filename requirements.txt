@@ -6,3 +6,8 @@ anki==25.9.2
 # Flask: minimal HTTP layer for the AnkiConnect wire protocol.
 # Using 3.1.x (latest stable as of scaffold date).
 flask==3.1.1
+
+# waitress: production WSGI server replacing the Flask dev server.
+# Pinned to current stable (June 2026). threads=1 is enforced at runtime
+# because the Anki Collection is a single-writer SQLite database.
+waitress==3.0.2

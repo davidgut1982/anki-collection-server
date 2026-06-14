@@ -14,9 +14,10 @@ Dispatch to the full action table (actions.py) and stateful review sessions
 
 Single-worker constraint:
   The SQLite-backed Anki collection is a single-writer database. This server
-  MUST run as a single OS process with a single thread (threaded=False) so
-  that only one Collection handle exists at a time. Do NOT run behind a
-  multi-worker WSGI server (gunicorn -w N with N>1, etc.).
+  MUST run as a single OS process with exactly ONE thread so that only one
+  Collection handle exists at a time. We use waitress (threads=1) instead of
+  the Flask development server. Do NOT change threads to >1, do NOT run behind
+  a multi-worker WSGI server (gunicorn -w N with N>1, etc.).
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import logging
 from typing import Any
 
 from flask import Flask, jsonify, request
+from waitress import serve
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -95,7 +97,7 @@ def health() -> Any:
 
 if __name__ == "__main__":
     log.info("Starting anki-collection-server on 0.0.0.0:8765 (single-threaded)")
-    # threaded=False is mandatory: the Anki Collection is not thread-safe and
-    # SQLite's WAL mode is single-writer. One request must complete before the
-    # next begins.
-    app.run(host="0.0.0.0", port=8765, threaded=False)
+    # threads=1 is REQUIRED: the Anki Collection is not thread-safe and SQLite
+    # is single-writer. One request must fully complete before the next begins.
+    # Never increase threads; never add workers; never use a multi-worker server.
+    serve(app, host="0.0.0.0", port=8765, threads=1)

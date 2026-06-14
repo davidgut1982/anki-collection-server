@@ -40,13 +40,10 @@ EXPOSE 8765
 # ---------------------------------------------------------------------------
 # Healthcheck
 # ---------------------------------------------------------------------------
-# Mirrors the existing anki-headless healthcheck: POST the AnkiConnect
-# version action and expect a non-empty 200 response.
+# Hit the dedicated /health endpoint (GET, returns {"status":"ok"} with 200).
+# This is simpler and more robust than parsing the AnkiConnect JSON envelope.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -sf -X POST http://localhost:8765 \
-        -H 'Content-Type: application/json' \
-        -d '{"action":"version","version":6}' | grep -q '"result":6' \
-    || exit 1
+    CMD curl -fs http://localhost:8765/health || exit 1
 
 # ---------------------------------------------------------------------------
 # Entrypoint

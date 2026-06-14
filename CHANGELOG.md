@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **WSGI server**: replaced Flask built-in dev server with `waitress==3.0.2`
+  (`threads=1`, mandatory for single-writer SQLite). The Flask `app` object is
+  unchanged; only the server entrypoint differs. Addresses Code Critic WARN
+  (HIGH): Werkzeug dev server not safe for production.
+- **Healthcheck hardening**: Dockerfile `HEALTHCHECK` and `docker-compose.example.yml`
+  healthcheck now hit `GET /health` (returns `{"status":"ok"}` with HTTP 200)
+  instead of the brittle POST+grep against the AnkiConnect envelope. Addresses
+  Code Critic WARN (HIGH): grep-based healthcheck too fragile.
+- Added `.dockerignore` to exclude `.git`, `__pycache__`, `*.pyc`, `*.pyo`,
+  `tests/`, `*.md`, `.env*`, `.ruff_cache` from the build context.
+
 ### Added
 - Project scaffolded: directory structure, `src/` package stubs, `tests/` skeleton.
 - `anki` pinned to **25.9.2** — matches the Anki Desktop 25.09.2 collection schema

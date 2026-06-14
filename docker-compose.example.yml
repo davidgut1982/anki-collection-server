@@ -38,17 +38,7 @@ services:
     # Adjust to match the actual owner of your .anki2 file.
     user: "1005:136"
     healthcheck:
-      test:
-        - CMD
-        - curl
-        - -sf
-        - -X
-        - POST
-        - http://localhost:8765
-        - -H
-        - "Content-Type: application/json"
-        - -d
-        - '{"action":"version","version":6}'
+      test: ["CMD-SHELL", "curl -fs http://localhost:8765/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
