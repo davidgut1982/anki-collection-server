@@ -144,10 +144,23 @@ class CollectionManager:
         # --- Open collection --------------------------------------------
         # Import lazily so that module-level import of collection.py does
         # not require anki to be installed (useful for tests that mock it).
-        from anki.collection import Collection  # noqa: PLC0415
+        # Both the import and the constructor are wrapped in the same
+        # try/except so that ANY exception (ModuleNotFoundError, schema
+        # mismatch, corrupt file, …) releases the lock before propagating.
+        try:
+            from anki.collection import Collection  # noqa: PLC0415
 
-        log.info("Opening collection: %s", resolved)
-        self._collection = Collection(str(resolved))
+            log.info("Opening collection: %s", resolved)
+            self._collection = Collection(str(resolved))
+        except Exception:
+            # Release the lock before propagating so that the caller can
+            # fix the problem and retry open() in the same process.
+            log.exception(
+                "Collection() raised during open — releasing fcntl lock: %s",
+                lock_path,
+            )
+            self.close()
+            raise
         log.info("Collection opened successfully.")
 
     def close(self) -> None:

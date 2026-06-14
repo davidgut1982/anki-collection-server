@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `src/collection.py` `CollectionManager.open()`: the fcntl lock is now
+  released (and `_lock_fd`/`_lock_path` reset) if `Collection()` raises for
+  any reason (corrupt file, schema mismatch, `ModuleNotFoundError`, etc.).
+  Previously the lock remained held until the process exited, blocking all
+  subsequent `open()` calls. Fix wraps the lazy `from anki.collection import
+  Collection` import AND the `Collection(path)` constructor in a single
+  `try/except` that delegates to the already-idempotent `self.close()` before
+  re-raising. Regression test added:
+  `tests/test_collection_lock_release.py::test_lock_released_after_failed_open_then_valid_open_succeeds`.
+  (Critic HIGH bug.)
+
 ### Added
 - `src/collection.py`: `CollectionManager` class and module-level singleton
   (`manager`).
