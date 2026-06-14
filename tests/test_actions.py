@@ -1,12 +1,12 @@
 """
 Integration tests for src/actions.py.
 
-All tests operate against a COPY of the static backup collection placed in
+All tests operate against a COPY of the committed test fixture placed in
 /tmp — the live collection is never opened.  Each test class manages its own
 temporary directory and CollectionManager instance so tests are isolated.
 
-Backup: /mnt/data/apps/anki/collection_backup_pre_audio_gen_20260530_235304.anki2
-(read-only; copied to /tmp for each test session).
+Default fixture: tests/fixtures/test_collection.anki2 (committed to repo)
+Override: set ANKI_TEST_BACKUP env var to point at a different .anki2 file.
 """
 
 from __future__ import annotations
@@ -26,12 +26,11 @@ from src import collection as col_mod
 from src.actions import ACTIONS
 
 # ---------------------------------------------------------------------------
-# Path to the static backup (never modified)
+# Path to the test fixture (committed; override via env var for CI flexibility)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_BACKUP = (
-    "/mnt/data/apps/anki/collection_backup_pre_audio_gen_20260530_235304.anki2"
-)
+_COMMITTED_FIXTURE = Path(__file__).parent / "fixtures" / "test_collection.anki2"
+_DEFAULT_BACKUP = str(_COMMITTED_FIXTURE)
 BACKUP = Path(os.environ.get("ANKI_TEST_BACKUP", _DEFAULT_BACKUP))
 
 
@@ -466,10 +465,10 @@ class TestGetNumCardsReviewedToday:
 
 class TestGetReviewsOfCards:
     def test_reviews_shape(self, col: None) -> None:
-        # The backup has 3741 revlog entries; pick any card that has been reviewed
+        # The fixture has 40 revlog entries; pick any card that has been reviewed
         card_ids = list(invoke("findCards", query="-is:new"))[:5]
         if not card_ids:
-            pytest.skip("No reviewed cards in backup")
+            pytest.skip("No reviewed cards in fixture")
 
         reviews = invoke("getReviewsOfCards", cards=card_ids)
         assert isinstance(reviews, dict)
@@ -510,7 +509,7 @@ class TestGetNumCardsReviewedByDay:
     def test_returns_list_of_pairs(self, col: None) -> None:
         result = invoke("getNumCardsReviewedByDay")
         assert isinstance(result, list)
-        # Backup has 3741 revlog entries so at least one day of reviews
+        # Fixture has 40 revlog entries across 7 days
         assert len(result) > 0
         for pair in result:
             assert len(pair) == 2

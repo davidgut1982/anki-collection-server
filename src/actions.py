@@ -100,19 +100,36 @@ def _find_notes(params: dict) -> list[int]:
     return list(_col().find_notes(query))
 
 
+def _profile_name() -> str:
+    """Return the Anki profile name derived from the collection file path.
+
+    AnkiConnect includes ``profile`` in ``notesInfo`` responses.  It is the
+    name of the directory containing the collection file, which corresponds to
+    the Anki profile name (e.g. ``"User 1"``).
+    """
+    col = _col()
+    return Path(col.path).parent.name
+
+
 def _notes_info(params: dict) -> list[dict]:
     col = _col()
     note_ids: list[int] = params.get("notes", [])
+    profile = _profile_name()
     result = []
     for nid in note_ids:
         note = col.get_note(nid)
         notetype = col.models.get(note.mid)
+        # card_ids_of_note() returns the card IDs belonging to this note
+        card_ids = list(col.card_ids_of_note(note.id))
         result.append(
             {
                 "noteId": note.id,
+                "profile": profile,
                 "modelName": notetype["name"] if notetype else "",
                 "tags": note.tags,
                 "fields": _fields_for_note(note, notetype) if notetype else {},
+                "mod": note.mod,
+                "cards": card_ids,
             }
         )
     return result
@@ -214,6 +231,13 @@ def _cards_info(params: dict) -> list[dict]:
 
     The tilts client reads: cardId, note, interval, factor, lapses, reps,
     type, flags, css, fields, deckName, modelName, queue, ord, due.
+
+    Additional keys for wire-compatibility with real AnkiConnect:
+      mod          — card modification timestamp (Unix seconds)
+      left         — reps remaining in current learning step (0 for review cards)
+      nextReviews  — list of interval label strings parallel to buttons
+                     [Again, Hard, Good, Easy] for review cards (type=2),
+                     [Again, Good, Easy] for new/learn cards (types 0,1,3)
     """
     col = _col()
     card_ids: list[int] = params.get("cards", [])
@@ -235,6 +259,22 @@ def _cards_info(params: dict) -> list[dict]:
             answer = ""
             css = ""
 
+        # nextReviews: interval label strings per ease button.
+        # For review cards (type=2) there are 4 buttons [Again, Hard, Good, Easy].
+        # For new/learn cards there are 3 buttons [Again, Good, Easy].
+        # nextIvlStr returns the same label strings as AnkiConnect's nextReviews.
+        try:
+            card_type = int(card.type)
+            if card_type == 2:
+                next_reviews = [
+                    col.sched.nextIvlStr(card, ease) for ease in (1, 2, 3, 4)
+                ]
+            else:
+                # New/learn: 3 buttons (Again, Good, Easy) — skip Hard
+                next_reviews = [col.sched.nextIvlStr(card, ease) for ease in (1, 3, 4)]
+        except Exception:
+            next_reviews = []
+
         result.append(
             {
                 "cardId": card.id,
@@ -254,7 +294,10 @@ def _cards_info(params: dict) -> list[dict]:
                 "factor": card.factor,
                 "reps": card.reps,
                 "lapses": card.lapses,
+                "left": card.left,
+                "mod": card.mod,
                 "flags": card.flags,
+                "nextReviews": next_reviews,
             }
         )
     return result

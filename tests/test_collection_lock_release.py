@@ -9,11 +9,10 @@ Scenario
 2. Immediately afterwards, `manager.open(valid_path)` → must succeed in the
    SAME process (proves the lock was actually freed).
 
-The valid collection is a pre-copied readable version of the production backup
-at /tmp/acs-valid-test.anki2 (created via ``sudo cp`` before running the test
-because the original backup is owned by a different uid).
-The corrupt file is a deliberately empty file (zero bytes) that anki will
-refuse to open.
+The valid collection defaults to the committed test fixture
+(tests/fixtures/test_collection.anki2).  Override via ANKI_TEST_BACKUP to use
+a different .anki2 file (e.g. /tmp/acs-valid-test.anki2 from a sudo cp).
+The corrupt file is a deliberately crafted file that anki will refuse to open.
 """
 
 from __future__ import annotations
@@ -28,8 +27,10 @@ import pytest
 # Paths
 # ---------------------------------------------------------------------------
 
-# Pre-copied readable backup (sudo cp + chmod 644 done before test run)
-READABLE_BACKUP = Path("/tmp/acs-valid-test.anki2")
+# Default: the committed test fixture (always readable in the repo).
+# Override with ANKI_TEST_BACKUP to use a different .anki2 file.
+_COMMITTED_FIXTURE = Path(__file__).parent / "fixtures" / "test_collection.anki2"
+READABLE_BACKUP = Path(os.environ.get("ANKI_TEST_BACKUP", str(_COMMITTED_FIXTURE)))
 
 TMP_DIR = Path("/tmp/acs-step4b")
 VALID_COL = TMP_DIR / "valid" / "collection.anki2"
@@ -72,8 +73,9 @@ def tmp_collections():
     if not READABLE_BACKUP.exists():
         pytest.skip(
             f"Readable backup not found: {READABLE_BACKUP}. "
-            "Run: sudo cp /mnt/data/apps/anki/collection_backup_pre_audio_gen_20260530_235304.anki2 "
-            "/tmp/acs-valid-test.anki2 && sudo chmod 644 /tmp/acs-valid-test.anki2"
+            "The committed fixture should always exist — check that "
+            "tests/fixtures/test_collection.anki2 is present in the repo. "
+            "Override via ANKI_TEST_BACKUP if needed."
         )
     _setup_tmp()
     yield

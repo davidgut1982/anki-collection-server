@@ -1,14 +1,13 @@
 """
 Integration tests for src/review_session.py — headless gui* state machine.
 
-All tests operate against a COPY of the static backup collection placed in
-/tmp — the live collection is NEVER opened.  The backup has SM-2 scheduling
-(FSRS not yet enabled in the collection), which is fine for testing the
-review-loop mechanics.  One test enables FSRS and validates the nextReviews
-format works correctly under the FSRS scheduler.
+All tests operate against a COPY of the committed test fixture placed in
+/tmp — the live collection is NEVER opened.  The fixture has SM-2 scheduling
+(FSRS not enabled), which is fine for testing the review-loop mechanics.
+One test enables FSRS and validates nextReviews works under the FSRS scheduler.
 
-Backup: /mnt/data/apps/anki/collection_backup_pre_audio_gen_20260530_235304.anki2
-(read-only; copied to /tmp for each test session).
+Default fixture: tests/fixtures/test_collection.anki2 (committed to repo)
+Override: set ANKI_TEST_BACKUP env var to point at a different .anki2 file.
 
 Test matrix:
   1. guiDeckReview selects a real deck → True, session created.
@@ -44,14 +43,15 @@ from src.review_session import GUI_ACTIONS
 # ---------------------------------------------------------------------------
 
 # Allow override via env var so CI / different UIDs can point at a readable copy.
-# Fall back to the canonical path if the env var is not set.
-_DEFAULT_BACKUP = (
-    "/mnt/data/apps/anki/collection_backup_pre_audio_gen_20260530_235304.anki2"
-)
+# Fall back to the committed fixture if the env var is not set.
+_COMMITTED_FIXTURE = Path(__file__).parent / "fixtures" / "test_collection.anki2"
+_DEFAULT_BACKUP = str(_COMMITTED_FIXTURE)
 BACKUP = Path(os.environ.get("ANKI_TEST_BACKUP", _DEFAULT_BACKUP))
 
-# A deck known to have cards due in the backup (from spike-findings.md)
-REVIEW_DECK = "Latvian (ChatGPT)::Vocab & Sentences"
+# Deck with review cards due in the committed fixture (type=2, queue=2, due=0).
+# Override to "Latvian (ChatGPT)::Vocab & Sentences" when using the production
+# backup via ANKI_TEST_BACKUP.
+REVIEW_DECK = os.environ.get("ANKI_TEST_REVIEW_DECK", "Default")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -143,8 +143,12 @@ class TestGuiDeckReview:
             invoke("guiDeckReview", name="NonExistentDeckXYZ::Subtest")
 
     def test_parent_deck_selects_ok(self, col: None) -> None:
-        """Selecting a parent deck should also succeed (returns True)."""
-        result = invoke("guiDeckReview", name="Latvian (ChatGPT)")
+        """Selecting a parent deck (Latvian) should also succeed (returns True)."""
+        # The committed fixture has a "Latvian" parent deck with sub-decks.
+        # When overriding with a production backup, set ANKI_TEST_REVIEW_DECK
+        # to a deck in that collection.
+        parent_deck = os.environ.get("ANKI_TEST_PARENT_DECK", "Latvian")
+        result = invoke("guiDeckReview", name=parent_deck)
         assert result is True
 
 
@@ -403,8 +407,11 @@ class TestFSRSMode:
         c.set_config("fsrs", True)
         assert c.get_config("fsrs") is True
 
-        # Compute and apply FSRS weights from the backup's revlog
-        # (1107 items in this backup — enough to produce meaningful params)
+        # Compute and apply FSRS weights from the fixture's revlog.
+        # The committed fixture has ~40 items which is too few for the
+        # health check; the optimizer will return empty params.  We skip
+        # param application in that case and rely on Anki's default FSRS
+        # weights being applied when FSRS is enabled without explicit params.
         try:
             result = c._backend.compute_fsrs_params(
                 search="",
@@ -414,12 +421,14 @@ class TestFSRSMode:
                 health_check=True,
             )
             optimized = list(result.params)
-            # Apply to all deck presets
-            for cfg in c.decks.all_config():
-                cfg["fsrsWeights"] = optimized
-                cfg["fsrsParams5"] = optimized[:17]
-                cfg["fsrsParams6"] = optimized
-                c.decks.update_config(cfg)
+            if optimized and len(optimized) >= 21:
+                # Apply to all deck presets (only when valid params returned)
+                for cfg in c.decks.all_config():
+                    cfg["fsrsWeights"] = optimized
+                    cfg["fsrsParams5"] = optimized[:17]
+                    cfg["fsrsParams6"] = optimized
+                    c.decks.update_config(cfg)
+            # If empty/short: FSRS is still enabled, Anki uses default weights
         except Exception as exc:
             pytest.skip(f"FSRS compute failed (too few items?): {exc}")
 

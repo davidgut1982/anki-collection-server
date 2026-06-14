@@ -45,10 +45,9 @@ from src.sync import do_sync
 # Constants
 # ---------------------------------------------------------------------------
 
-_DEFAULT_BACKUP = Path(
-    "/mnt/data/apps/anki/collection_backup_pre_audio_gen_20260530_235304.anki2"
-)
-BACKUP = Path(os.environ.get("ANKI_TEST_BACKUP", str(_DEFAULT_BACKUP)))
+_COMMITTED_FIXTURE = Path(__file__).parent / "fixtures" / "test_collection.anki2"
+_DEFAULT_BACKUP = str(_COMMITTED_FIXTURE)
+BACKUP = Path(os.environ.get("ANKI_TEST_BACKUP", _DEFAULT_BACKUP))
 
 # Disposable sync server — completely separate from production.
 _SYNC_IMAGE = "ghcr.io/luckyturtledev/anki:latest"
