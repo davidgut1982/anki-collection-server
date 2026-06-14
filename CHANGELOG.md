@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (critic hardening — sync.py + fsrs.py)
+
+- **fsrs.py — assert stripped under -O (HIGH):** Replaced `assert col.get_config("fsrs") is True`
+  with an explicit `if … is not True: raise RuntimeError(…)`.  `assert` statements are silently
+  discarded under `python -O` / `PYTHONOPTIMIZE`, making the guard a no-op in optimised builds.
+
+- **fsrs.py — FSRS left enabled-without-weights on optimizer failure (HIGH):** The previous
+  `except Exception` handler returned `{"enabled": True, "optimized": False}`, leaving the FSRS
+  config flag set even though no valid weight vector had been applied — a silent scheduling
+  degradation on every synced device.  Fix: on any optimizer exception, `set_config("fsrs", False)`
+  is called before returning, and the result now carries `"enabled": False` and `"error": str(exc)`.
+  Same rollback applied to the empty-params and short-params paths.
+
+- **fsrs.py — truncated param vector applied to presets (MEDIUM):** When the optimizer returned
+  fewer than 21 params, the code previously logged a warning and still applied the vector (writing
+  a 17-element `fsrsParams5` truncation to all presets).  Now: if `len(params) < 21`, FSRS is
+  rolled back to disabled and an early-return signals `optimized=False`.  Params are only written
+  when exactly 21 are present.
+
+- **sync.py — NORMAL_SYNC semantics misrepresented (HIGH):** The `NORMAL_SYNC (1)` branch
+  previously returned `{"uploaded": True}`, implying a pure upload when the incremental protocol
+  is actually a bidirectional merge.  Now returns `{"synced": True}` and emits a `log.warning`
+  noting that server changes may have been applied locally and that upload-wins is only guaranteed
+  if no other client writes to the sync server.  Tests updated to assert on `"synced"` for the
+  `NORMAL_SYNC` path.
+
+- **sync.py — missing explicit FULL_DOWNLOAD branch (MEDIUM):** Added `_FULL_DOWNLOAD = 3`
+  constant and an explicit branch: when `required == 3`, `full_upload_or_download(upload=True)`
+  is called with a warning log asserting local authority.  Previously this case silently fell
+  through to the unknown-value error path.
+
+- **sync.py — ANKI_SYNC_USER1 credential strip (MEDIUM):** After `partition(":")`, both the
+  username and password parts are now `.strip()`-ped to remove accidental whitespace.  The
+  `partition` (first-colon-only split) was already correct; only the strip was missing.
+
+- **sync.py — lock-hold comment (LOW):** Added a comment before the `with col_mod._col_lock:`
+  block noting that the lock is held for the full network round-trip, and the implications if
+  waitress thread count is ever raised above 1.
+
+- **tests/test_fsrs.py — FSRS rollback test added:** New `TestFsrsOptimizerRollback` class with
+  `test_optimizer_failure_rolls_back_fsrs`: monkeypatches `col._backend.compute_fsrs_params` to
+  raise, then asserts `result["enabled"] is False` and `is_fsrs_enabled() is False` — confirming
+  the rollback reaches the collection config and is not just a return-value claim.
+
+- **tests/test_sync.py — renamed-field assertions:** Updated `TestSyncSecondRun` to assert on
+  `result["synced"]` (not `result["uploaded"]`) when `required == 1` (NORMAL_SYNC), and to assert
+  `result["uploaded"] is False` when `required == 0` (NO_CHANGES).
+
 ### Added (Step 8 — sync.py + fsrs.py)
 
 - `src/sync.py`: Upload-wins sync integration against an AnkiWeb-compatible

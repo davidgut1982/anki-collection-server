@@ -133,9 +133,10 @@ def enable_fsrs(optimize: bool = True) -> dict[str, Any]:
         # Step 1: Enable FSRS (idempotent)
         # ------------------------------------------------------------------
         col.set_config("fsrs", True)
-        assert col.get_config("fsrs") is True, (
-            "set_config('fsrs', True) did not persist"
-        )
+        # Use an explicit guard instead of assert: assert statements are
+        # silently removed under python -O / PYTHONOPTIMIZE.
+        if col.get_config("fsrs") is not True:
+            raise RuntimeError("set_config('fsrs', True) did not persist")
         log.info("FSRS enabled (set_config 'fsrs' = True).")
 
         if not optimize:
@@ -160,17 +161,28 @@ def enable_fsrs(optimize: bool = True) -> dict[str, Any]:
                 num_of_relearning_steps=1,  # match standard relearning step count
                 health_check=True,  # validate data quality
             )
-        except Exception:
+        except Exception as exc:
+            # Roll back FSRS so we never leave it enabled-without-valid-weights.
+            # Leaving FSRS on with no params would cause silent scheduling
+            # degradation for every synced device.
             log.exception(
                 "FSRS optimizer raised — collection may have too few review "
-                "items.  FSRS will remain enabled with default weights."
+                "items.  Rolling back FSRS to disabled."
             )
+            try:
+                col.set_config("fsrs", False)
+                log.warning("FSRS rolled back to disabled after optimizer failure.")
+            except Exception:
+                log.exception(
+                    "Failed to roll back FSRS config — manual intervention required."
+                )
             return {
-                "enabled": True,
+                "enabled": False,
                 "optimized": False,
                 "num_params": 0,
                 "fsrs_items": 0,
                 "health_check_passed": False,
+                "error": str(exc),
             }
 
         params: list[float] = list(result.params)
@@ -185,28 +197,50 @@ def enable_fsrs(optimize: bool = True) -> dict[str, Any]:
         )
 
         if not params:
-            log.warning(
-                "Optimizer returned empty params — skipping update. "
-                "FSRS enabled with default weights."
+            # Empty param list — treat the same as short params: roll back so
+            # we never leave FSRS enabled without a valid weight vector.
+            log.error(
+                "Optimizer returned empty params — rolling back FSRS to disabled."
             )
+            try:
+                col.set_config("fsrs", False)
+            except Exception:
+                log.exception("Failed to roll back FSRS config after empty params.")
             return {
-                "enabled": True,
+                "enabled": False,
                 "optimized": False,
                 "num_params": 0,
                 "fsrs_items": fsrs_items,
                 "health_check_passed": health_check_passed,
+                "error": "Optimizer returned empty params",
             }
 
         if len(params) < _FSRS6_PARAM_COUNT:
-            log.warning(
+            # Applying a truncated/short param vector would silently corrupt
+            # scheduling — treat this the same as optimizer failure.
+            log.error(
                 "Optimizer returned only %d params (expected %d) — "
-                "still applying but flagging.",
+                "refusing to apply truncated vector.  "
+                "FSRS NOT enabled.",
                 len(params),
                 _FSRS6_PARAM_COUNT,
             )
+            try:
+                col.set_config("fsrs", False)
+            except Exception:
+                log.exception("Failed to roll back FSRS config after short params.")
+            return {
+                "enabled": False,
+                "optimized": False,
+                "num_params": len(params),
+                "fsrs_items": fsrs_items,
+                "health_check_passed": health_check_passed,
+                "error": f"Optimizer returned {len(params)} params, expected {_FSRS6_PARAM_COUNT}",
+            }
 
         # ------------------------------------------------------------------
         # Step 3: Apply params to all deck configuration presets
+        # (only reached when exactly 21 params are present)
         # ------------------------------------------------------------------
         configs: list[dict[str, Any]] = col.decks.all_config()
         log.info("Applying FSRS params to %d deck preset(s).", len(configs))

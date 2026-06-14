@@ -25,7 +25,6 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import Generator
-
 import pytest
 
 import src.collection as col_mod
@@ -159,3 +158,51 @@ class TestEnableFsrs:
     def test_still_enabled_after_no_optimize_call(self, col: None) -> None:
         """FSRS stays enabled regardless of optimize=False."""
         assert is_fsrs_enabled() is True
+
+
+class TestFsrsOptimizerRollback:
+    """FSRS must be rolled back to disabled when the optimizer raises.
+
+    Contract: never leave FSRS on without a valid weight vector.
+    """
+
+    def test_optimizer_failure_rolls_back_fsrs(self, col: None) -> None:
+        """When compute_fsrs_params raises, enable_fsrs must:
+        - return enabled=False
+        - roll FSRS config back to False (not leave it enabled-without-weights)
+        """
+        boom = RuntimeError("simulated optimizer failure — not enough data")
+
+        # Patch _backend.compute_fsrs_params on the live collection object.
+        live_col = col_mod.get_col()
+        original_fn = live_col._backend.compute_fsrs_params
+
+        try:
+            live_col._backend.compute_fsrs_params = lambda **_kw: (_ for _ in ()).throw(
+                boom
+            )  # type: ignore[method-assign]
+
+            result = enable_fsrs(optimize=True)
+
+            print(
+                f"\n[optimizer rollback] "
+                f"enabled={result['enabled']} "
+                f"optimized={result['optimized']} "
+                f"error={result.get('error')!r}"
+            )
+
+            assert result["enabled"] is False, (
+                "enabled must be False after optimizer failure — "
+                "FSRS must not be left on without valid weights"
+            )
+            assert result["optimized"] is False
+            assert "error" in result, "result must include an 'error' key on failure"
+
+            # Confirm the config was actually rolled back in the collection.
+            assert is_fsrs_enabled() is False, (
+                "is_fsrs_enabled() must return False after optimizer rollback — "
+                "FSRS config must not be left as True"
+            )
+
+        finally:
+            live_col._backend.compute_fsrs_params = original_fn  # type: ignore[method-assign]

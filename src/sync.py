@@ -78,6 +78,13 @@ log = logging.getLogger(__name__)
 _NO_CHANGES = 0
 _NORMAL_SYNC = 1
 _FULL_SYNC = 2
+# _FULL_DOWNLOAD (3): server schema is newer than client — Anki normally
+# forces a full download onto the client.  We treat this as an upload
+# instead, asserting local authority.  In practice this cannot be triggered
+# at our cutover (the local collection has ~5000 cards and the sync server
+# starts empty), but the branch is made explicit so the fallthrough path
+# is not relied on silently.
+_FULL_DOWNLOAD = 3
 _FULL_UPLOAD = 4
 
 
@@ -108,7 +115,10 @@ def _sync_credentials() -> tuple[str, str]:
 
     user1 = os.environ.get("ANKI_SYNC_USER1", "").strip()
     if user1 and ":" in user1:
+        # partition on the FIRST colon only — passwords may contain ':'
         u, _, p = user1.partition(":")
+        u = u.strip()
+        p = p.strip()
         if u and p:
             return u, p
 
@@ -153,10 +163,13 @@ def do_sync(
     Returns
     -------
     dict
-        ``{"required": int, "uploaded": bool, "message": str}``
+        ``{"required": int, "uploaded": bool, "message": str}`` for most
+        paths.  The ``NORMAL_SYNC`` (1) path returns ``"synced": True``
+        instead of ``"uploaded": True`` to reflect that the incremental
+        exchange is bidirectional and not a pure upload.
 
         ``required`` is the raw ``SyncCollectionResponse.required`` int
-        (0/1/2/4) from the initial ``sync_collection`` call, or ``-1``
+        (0/1/2/3/4) from the initial ``sync_collection`` call, or ``-1``
         when ``force_upload`` was *True* and the initial probe was skipped.
 
     Raises
@@ -172,6 +185,10 @@ def do_sync(
     username, password = _sync_credentials()
     endpoint = _sync_endpoint()
 
+    # NOTE: _col_lock is held for the entire network round-trip below.
+    # This is intentional — the collection must not be modified while a sync
+    # is in flight.  If waitress ever runs with threads > 1 this will block
+    # all other collection operations until the sync completes.
     with col_mod._col_lock:
         col = col_mod.get_col()
 
@@ -228,10 +245,15 @@ def do_sync(
             # extra to do.  The incremental protocol exchanges deltas in
             # both directions and cannot be forced to "upload only" at the
             # protocol level — the server determines the merge.
-            log.info("Sync: incremental sync complete.")
+            log.warning(
+                "NORMAL_SYNC: bidirectional incremental merge executed — "
+                "server changes may have been applied locally.  "
+                "Upload-wins is only guaranteed if no other client writes "
+                "to the sync server."
+            )
             return {
                 "required": required,
-                "uploaded": True,
+                "synced": True,
                 "message": "Normal incremental sync completed.",
             }
 
@@ -252,6 +274,28 @@ def do_sync(
                 "uploaded": True,
                 "message": (
                     "FULL_SYNC conflict resolved by upload — "
+                    "local collection pushed to server."
+                ),
+            }
+
+        if required == _FULL_DOWNLOAD:
+            # Server schema is newer than local client — Anki would normally
+            # force a full download, overwriting local data.  We assert local
+            # authority instead by uploading.  This branch cannot be triggered
+            # at cutover (local collection has ~5000 cards; sync server starts
+            # empty), but is made explicit to avoid silent fallthrough.
+            log.warning(
+                "FULL_DOWNLOAD required (local collection empty/schema mismatch) "
+                "— forcing UPLOAD to assert local authority.  "
+                "Server content will be replaced."
+            )
+            col.full_upload_or_download(auth=auth, server_usn=None, upload=True)
+            log.info("Full upload (FULL_DOWNLOAD override) complete.")
+            return {
+                "required": required,
+                "uploaded": True,
+                "message": (
+                    "FULL_DOWNLOAD overridden by upload — "
                     "local collection pushed to server."
                 ),
             }

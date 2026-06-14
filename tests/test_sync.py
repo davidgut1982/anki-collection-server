@@ -197,7 +197,7 @@ class TestSyncFirstRun:
 
         print(
             f"\n[first sync] required={result['required']} "
-            f"uploaded={result['uploaded']} "
+            f"uploaded={result.get('uploaded', result.get('synced'))} "
             f"message={result['message']!r}"
         )
 
@@ -210,12 +210,16 @@ class TestSyncFirstRun:
 
 class TestSyncSecondRun:
     def test_second_sync_no_changes_or_normal(self, sync_env: None) -> None:
-        """Second sync should find no new changes — server is already up to date."""
+        """Second sync should find no new changes — server is already up to date.
+
+        NORMAL_SYNC (1) returns ``synced=True`` (bidirectional exchange).
+        NO_CHANGES (0) returns ``uploaded=False``.
+        """
         result = do_sync(force_upload=False, sync_media=False)
 
         print(
             f"\n[second sync] required={result['required']} "
-            f"uploaded={result['uploaded']} "
+            f"synced={result.get('synced')} uploaded={result.get('uploaded')} "
             f"message={result['message']!r}"
         )
 
@@ -226,6 +230,15 @@ class TestSyncSecondRun:
             f"Expected required in (0=NO_CHANGES, 1=NORMAL_SYNC) after full upload, "
             f"got {result['required']}"
         )
+        # For NORMAL_SYNC the return key is 'synced'; for NO_CHANGES it's 'uploaded'.
+        if result["required"] == 1:
+            assert result.get("synced") is True, (
+                "NORMAL_SYNC path must set synced=True (bidirectional merge)"
+            )
+        else:
+            assert result.get("uploaded") is False, (
+                "NO_CHANGES path must set uploaded=False"
+            )
 
 
 class TestForceUpload:
