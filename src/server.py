@@ -52,6 +52,7 @@ def err(message: str) -> dict[str, Any]:
 # Stub action dispatch (Step 2 only — real dispatch added in Step 5)
 # ---------------------------------------------------------------------------
 
+
 def dispatch(action: str, params: dict[str, Any]) -> dict[str, Any]:
     """Route an action to its handler.
 
@@ -66,6 +67,7 @@ def dispatch(action: str, params: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
 
 @app.post("/")
 def anki_connect() -> Any:
