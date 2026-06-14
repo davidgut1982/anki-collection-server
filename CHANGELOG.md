@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `src/actions.py`: Complete `ACTIONS` dispatch dict implementing all CRUD/media/stats
+  AnkiConnect handlers required by the Tilts client (Step 6).  Handlers ported from
+  FooSoft/anki-connect (AGPL-3.0), adapted to the `anki` pip package (25.9.2).
+
+  **Notes CRUD**: `version` (→6), `findNotes`, `notesInfo`, `addNote`, `updateNoteFields`,
+  `addTags`, `removeTags`.
+
+  **Cards CRUD**: `findCards`, `cardsInfo` (renders via `card.render_output()`),
+  `cardsToNotes`, `changeDeck`, `createDeck`, `deckNames`, `getDeckStats`,
+  `suspend`, `unsuspend`.
+
+  **Models**: `modelNames`, `createModel`.
+
+  **Card mutation**: `setSpecificValueOfCard` (flags key implemented; others return error).
+
+  **Media**: `storeMediaFile` (base64 → `col.media.write_data`), `retrieveMediaFile`
+  (read + base64 encode; returns `false` if missing per AnkiConnect), `deleteMediaFile`
+  (`col.media.trash_files`).
+
+  **Stats**: `getNumCardsReviewedToday` (revlog count since `col.sched.day_cutoff * 1000`),
+  `getNumCardsReviewedByDay` (aggregate revlog by date), `getReviewsOfCards` (full revlog
+  per card; returns `ease`, `time`, `type` consumed by tilts client), `getCollectionStatsHTML`
+  (minimal HTML ping — tilts only uses it to verify connection availability).
+
+  Response shapes verified against `tilts-system/agent/modules/anki_connect_client.py`.
+
+- `tests/test_actions.py`: 25 integration tests covering all hot paths against a /tmp
+  copy of the static collection backup.  Collection singleton is opened/closed per-test
+  via the `col` fixture; backup is never modified.  All 25 pass (0.29 s).
+
 ### Fixed
 - `src/collection.py` `CollectionManager.open()`: the fcntl lock is now
   released (and `_lock_fd`/`_lock_path` reset) if `Collection()` raises for
