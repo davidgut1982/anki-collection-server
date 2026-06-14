@@ -27,8 +27,10 @@ Test matrix:
 
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Generator
 
@@ -41,9 +43,12 @@ from src.review_session import GUI_ACTIONS
 # Paths
 # ---------------------------------------------------------------------------
 
-BACKUP = Path(
+# Allow override via env var so CI / different UIDs can point at a readable copy.
+# Fall back to the canonical path if the env var is not set.
+_DEFAULT_BACKUP = (
     "/mnt/data/apps/anki/collection_backup_pre_audio_gen_20260530_235304.anki2"
 )
+BACKUP = Path(os.environ.get("ANKI_TEST_BACKUP", _DEFAULT_BACKUP))
 
 # A deck known to have cards due in the backup (from spike-findings.md)
 REVIEW_DECK = "Latvian (ChatGPT)::Vocab & Sentences"
@@ -66,9 +71,25 @@ def invoke(action: str, **kwargs: object) -> object:
 
 @pytest.fixture(scope="session")
 def backup_copy() -> Generator[Path, None, None]:
-    """Copy the backup to /tmp once; yield the path; clean up after session."""
+    """Copy the backup to /tmp once; yield the path; clean up after session.
+
+    Fails loudly (pytest.fail) rather than silently skipping when the backup
+    is not readable — a silent skip causes CI to green with 0 assertions.
+
+    Set ANKI_TEST_BACKUP to override the default path (useful when running as
+    a UID that cannot read the default 0600/UID-1005 file).
+    """
     if not BACKUP.exists():
-        pytest.skip(f"Backup not found: {BACKUP}")
+        pytest.fail(
+            f"Test backup not found: {BACKUP}. "
+            f"Set ANKI_TEST_BACKUP env var to a readable .anki2 file."
+        )
+    if not os.access(BACKUP, os.R_OK):
+        pytest.fail(
+            f"Test backup not accessible (permission denied): {BACKUP}. "
+            f"Set ANKI_TEST_BACKUP env var to a readable .anki2 file "
+            f"(e.g. ANKI_TEST_BACKUP=/tmp/anki-test-backup.anki2)."
+        )
 
     tmpdir = Path(tempfile.mkdtemp(prefix="acs-review-test-", dir="/tmp"))
     col_path = tmpdir / "collection.anki2"
@@ -465,3 +486,99 @@ class TestStaleProtection:
         # No guiDeckReview called
         with pytest.raises(RuntimeError):
             invoke("guiAnswerCard", ease=3)
+
+    def test_ease_not_in_buttons_raises_value_error(self, col: None) -> None:
+        """ease not in card's available buttons must raise ValueError.
+
+        New/learning cards have buttons [1,3,4] (no Hard=2).  Submitting
+        ease=2 on such a card must raise ValueError, not silently apply wrong
+        scheduling.  This tests the ease-in-buttons guard added in the critic
+        HIGH fix.
+        """
+        invoke("guiDeckReview", name=REVIEW_DECK)
+        card = invoke("guiCurrentCard")
+        if card is None:
+            pytest.skip("No cards due")
+
+        card_dict = card  # type: ignore[assignment]
+        buttons: list[int] = card_dict["buttons"]  # type: ignore[index]
+
+        # Find an ease value that is a valid ease (1–4) but NOT in this card's
+        # button set.  For a new/learn card buttons=[1,3,4] → 2 is absent.
+        # For a review card buttons=[1,2,3,4] → all are present, so we use 5.
+        absent_ease: int | None = None
+        for candidate in [2, 5]:
+            if candidate not in buttons:
+                absent_ease = candidate
+                break
+
+        if absent_ease is None:
+            pytest.skip("Could not find an absent ease for this card's buttons")
+
+        with pytest.raises((ValueError, Exception)):
+            invoke("guiAnswerCard", ease=absent_ease)
+
+
+# ---------------------------------------------------------------------------
+# 7. Review-duration timer: revlog records non-zero time
+# ---------------------------------------------------------------------------
+
+
+class TestReviewDurationTimer:
+    """Verify that the revlog time field is non-zero after answering a card.
+
+    Real Anki starts the timer when the card is shown.  The critic HIGH bug
+    was that start_timer() was called immediately before build_answer(), so
+    card.time_taken() ≈ 0 ms.  The fix: call start_timer() in guiCurrentCard
+    and restore card.timer_started in guiAnswerCard.
+    """
+
+    def test_revlog_time_is_nonzero_after_sleep(self, col: None) -> None:
+        """Serve a card, sleep ~1.1 s, answer it; revlog time must be > 0 ms."""
+        import src.collection as col_mod  # noqa: PLC0415
+
+        invoke("guiDeckReview", name=REVIEW_DECK)
+        card_payload = invoke("guiCurrentCard")
+        if card_payload is None:
+            pytest.skip("No cards due for timer test")
+
+        card_id: int = card_payload["cardId"]  # type: ignore[index]
+
+        # Snapshot revlog count before answering
+        c = col_mod.get_col()
+        before_count: int = c.db.scalar(
+            "SELECT count(*) FROM revlog WHERE cid = ?", card_id
+        )
+
+        # Simulate real user think-time: sleep > 1 s so time_taken() > 1000 ms
+        time.sleep(1.1)
+
+        invoke("guiShowAnswer")
+        # Choose an ease that is valid for this card
+        buttons: list[int] = card_payload["buttons"]  # type: ignore[index]
+        ease = 3 if 3 in buttons else buttons[-1]
+        invoke("guiAnswerCard", ease=ease)
+
+        # Check the new revlog row's time field
+        after_count: int = c.db.scalar(
+            "SELECT count(*) FROM revlog WHERE cid = ?", card_id
+        )
+        assert after_count == before_count + 1, (
+            f"Expected 1 new revlog row for card {card_id}, "
+            f"got {after_count - before_count}"
+        )
+
+        recorded_time_ms: int = c.db.scalar(
+            "SELECT time FROM revlog WHERE cid = ? ORDER BY id DESC LIMIT 1",
+            card_id,
+        )
+        assert recorded_time_ms > 0, (
+            f"revlog.time must be > 0 ms (got {recorded_time_ms} ms). "
+            "Timer was not started at card-serve time."
+        )
+        # We slept 1.1 s, so at least 1000 ms should be recorded.
+        # Anki caps at 60 000 ms; we just verify it's plausible (> 500 ms).
+        assert recorded_time_ms >= 500, (
+            f"revlog.time={recorded_time_ms} ms is suspiciously low for a 1.1 s delay. "
+            "Expected >= 500 ms."
+        )

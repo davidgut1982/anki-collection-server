@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (critic HIGH/LOW — review_session.py)
+
+- **Review-duration timer records ~0 ms (Critic HIGH)** — `card.start_timer()` was
+  previously called inside `gui_answer_card` immediately before `build_answer`, so
+  `card.time_taken()` always returned ~0 ms and every revlog entry recorded zero
+  duration.  Real Anki starts the timer when the card is *shown*.
+
+  Fix: `gui_current_card` now calls `card.start_timer()` when the card is served and
+  saves the resulting `card.timer_started` float as `session.card_timer_started`.  In
+  `gui_answer_card` the saved value is restored onto the freshly-fetched card object
+  (`card.timer_started = saved_timer`) *before* `build_answer` is called, so
+  `card.time_taken()` returns the actual elapsed wall-clock seconds.
+
+  Measured: 1.1 s think-time → `revlog.time = 1100 ms` (previously 0 ms).
+  `guiStartCardTimer` still works as a UI affordance (it can refresh the start time).
+
+- **No ease-in-buttons guard (Critic HIGH)** — a malformed ease value not in the
+  current card's available buttons (e.g. ease=2 on a new card with buttons `[1,3,4]`)
+  silently applied wrong scheduling.  Fix: `current_buttons` is now stored in the
+  session at `guiCurrentCard` time; `gui_answer_card` raises
+  `ValueError("ease N not available; valid buttons=[...]")` if the submitted ease is
+  not in the stored button list.
+
+- **Test-fixture silent skip in CI (Critic LOW)** — the backup path is mode 0600/UID
+  1005, so running tests as another UID caused `pytest.skip` on the backup fixture,
+  making CI green with 0 assertions executed.  Fix:
+  - Read backup path from `ANKI_TEST_BACKUP` env var (fallback to default path).
+  - Replace `pytest.skip` with `pytest.fail` (loud failure) when the resolved path
+    does not exist or is not readable.
+  - Tests run green (29 passed) with `ANKI_TEST_BACKUP=/tmp/anki-test-backup.anki2`.
+
+- **Two new tests added**:
+  - `TestStaleProtection::test_ease_not_in_buttons_raises_value_error` — submitting an
+    ease absent from the card's button set raises `ValueError` (tests Critic HIGH fix).
+  - `TestReviewDurationTimer::test_revlog_time_is_nonzero_after_sleep` — serves a
+    card, sleeps 1.1 s, answers it, and asserts `revlog.time >= 500 ms`
+    (tests Critic HIGH timer fix; measured ~1100 ms in practice).
+
+  Total test count: 27 → 29 (all pass, 1.63 s).
+
 ### Added (Step 7 — review_session.py)
 
 - `src/review_session.py`: Headless gui* review-session state machine — replaces

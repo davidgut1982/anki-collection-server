@@ -106,20 +106,32 @@ class _ReviewSession:
     """Mutable state for a single active review session.
 
     Attributes:
-        deck_id:          The numeric Anki deck id being reviewed.
-        current_card_id:  Card id currently "in focus" (None = no card fetched
-                          yet, or the previous card has been answered/cleared).
-        current_states:   The ``SchedulingStates`` protobuf returned with the
-                          queued card.  Stored so ``guiAnswerCard`` can build
-                          the ``CardAnswer`` without re-fetching.
-        started_at:       Unix timestamp of session creation.
-        timer_started_at: Unix timestamp of the per-card timer (set by
-                          ``guiStartCardTimer``; None = timer not started).
+        deck_id:              The numeric Anki deck id being reviewed.
+        current_card_id:      Card id currently "in focus" (None = no card
+                              fetched yet, or the previous card has been
+                              answered/cleared).
+        current_states:       The ``SchedulingStates`` protobuf returned with
+                              the queued card.  Stored so ``guiAnswerCard`` can
+                              build the ``CardAnswer`` without re-fetching.
+        current_buttons:      The list of valid ease values for the current card
+                              (e.g. ``[1,2,3,4]`` or ``[1,3,4]``).  Stored at
+                              ``guiCurrentCard`` time so ``guiAnswerCard`` can
+                              reject out-of-range ease values.
+        card_timer_started:   The ``card.timer_started`` float value saved when
+                              the card was served in ``guiCurrentCard``.  Restored
+                              onto the freshly-fetched card object in
+                              ``guiAnswerCard`` so ``card.time_taken()`` returns
+                              the actual elapsed time rather than ~0 ms.
+        started_at:           Unix timestamp of session creation.
+        timer_started_at:     Unix timestamp of the per-card timer (set by
+                              ``guiStartCardTimer``; None = timer not started).
     """
 
     deck_id: int
     current_card_id: int | None = None
     current_states: Any | None = None  # SchedulingStates protobuf
+    current_buttons: list[int] = field(default_factory=list)
+    card_timer_started: float | None = None  # card.timer_started saved at serve time
     started_at: float = field(default_factory=time.time)
     timer_started_at: float | None = None
 
@@ -319,9 +331,19 @@ class ReviewSessionManager:
             deck_name = col.decks.name(card.did)
             model_name = notetype["name"] if notetype else ""
 
-            # Store card id and scheduling states for guiAnswerCard
+            # Start the per-card timer NOW (when the card is shown), matching
+            # what real Anki does in the Qt reviewer.  We save the resulting
+            # timer_started float so that gui_answer_card can restore it onto
+            # the freshly-fetched card object — this is what makes time_taken()
+            # return a realistic non-zero duration.
+            card.start_timer()
+            saved_timer_started: float | None = card.timer_started
+
+            # Store card id, scheduling states, buttons, and timer for guiAnswerCard
             self._session.current_card_id = int(card.id)
             self._session.current_states = qc.states
+            self._session.current_buttons = list(buttons)
+            self._session.card_timer_started = saved_timer_started
 
         payload: dict = {
             "cardId": int(card.id),
@@ -401,18 +423,36 @@ class ReviewSessionManager:
             )
 
         ease: int = int(params.get("ease", 0))
+
+        # Guard: ease must be one of the buttons that were presented with this
+        # card.  Out-of-range values (e.g. ease=2 on a new card that only has
+        # buttons [1,3,4]) would silently apply wrong scheduling.
+        current_buttons = self._session.current_buttons
+        if current_buttons and ease not in current_buttons:
+            raise ValueError(
+                f"ease {ease} not available for current card; "
+                f"valid buttons={current_buttons}"
+            )
+
         rating = _rating_for_ease(ease)
 
         col = self._col()
 
         with col_mod._col_lock:
             card = col.get_card(current_card_id)
-            # build_answer calls card.time_taken() which requires
-            # card.timer_started to be set.  In the Qt reviewer,
-            # card.start_timer() is called when the card is shown.
-            # Headlessly we call it here if not already started.
-            if card.timer_started is None:
+            # Restore the timer_started value that was saved when the card was
+            # served in guiCurrentCard.  This makes card.time_taken() return the
+            # actual elapsed time (real Anki starts the timer when the card is
+            # shown, not when the answer is submitted).  Without this, every
+            # revlog entry records ~0 ms duration which corrupts FSRS scheduling.
+            saved_timer = self._session.card_timer_started
+            if saved_timer is not None:
+                card.timer_started = saved_timer
+            elif card.timer_started is None:
+                # Fallback: should not happen in normal flow, but guard to avoid
+                # TypeError inside build_answer → time_taken().
                 card.start_timer()
+
             answer = col.sched.build_answer(
                 card=card,
                 states=current_states,
@@ -429,6 +469,8 @@ class ReviewSessionManager:
             # Clear so the next guiCurrentCard fetches the next card
             self._session.current_card_id = None
             self._session.current_states = None
+            self._session.current_buttons = []
+            self._session.card_timer_started = None
             self._session.timer_started_at = None
 
         return True
@@ -455,6 +497,8 @@ class ReviewSessionManager:
                 if self._session is not None:
                     self._session.current_card_id = None
                     self._session.current_states = None
+                    self._session.current_buttons = []
+                    self._session.card_timer_started = None
                     self._session.timer_started_at = None
                     # Re-select deck so the un-done card re-surfaces
                     col.decks.select(self._session.deck_id)
