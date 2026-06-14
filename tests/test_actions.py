@@ -161,6 +161,38 @@ class TestAddNoteRoundTrip:
         assert info["fields"]["Back"]["value"] == "acs-test-back-xzq"
 
 
+class TestAddNoteDuplicateDetection:
+    """Adding the same note twice must raise on the second call."""
+
+    def test_add_duplicate_raises_value_error(self, col: None) -> None:
+        """Second addNote with identical fields must surface as ValueError.
+
+        Before the critic fix, col.add_note() silently created the duplicate.
+        After the fix, duplicate_or_empty()==2 is checked before add_note()
+        and raises ValueError, which the server converts to
+        {"result": null, "error": "..."}.
+        """
+        model = "Basic (and reversed card)"
+        note_payload = {
+            "deckName": "Default",
+            "modelName": model,
+            "fields": {
+                "Front": "dup-test-front-unique-xzq9",
+                "Back": "dup-test-back-xzq9",
+            },
+            "tags": ["acs-dup-test"],
+        }
+
+        # First add must succeed
+        note_id = invoke("addNote", note=note_payload)
+        assert isinstance(note_id, int)
+        assert note_id > 0
+
+        # Second add with identical fields must raise
+        with pytest.raises(ValueError, match="duplicate"):
+            invoke("addNote", note=note_payload)
+
+
 class TestUpdateNoteFields:
     def test_update_changes_field(self, col: None) -> None:
         model = "Basic (and reversed card)"
@@ -316,6 +348,25 @@ class TestGetDeckStats:
         # Should return a zero entry rather than raising
         assert len(stats) == 1
 
+    def test_deck_stats_two_missing_decks_produce_two_entries(self, col: None) -> None:
+        """Two non-existent deck names must yield two DISTINCT result keys.
+
+        Before the critic fix, all missing decks used did=0 as the key, so
+        the second entry silently overwrote the first, leaving len(result)==1.
+        """
+        stats = invoke(
+            "getDeckStats",
+            decks=["NonExistentAlpha", "NonExistentBeta"],
+        )
+        assert isinstance(stats, dict)
+        assert len(stats) == 2, (
+            f"Expected 2 distinct entries for 2 missing decks, got {len(stats)}: "
+            f"{list(stats.keys())}"
+        )
+        # Each entry should have the right name and zero counts
+        names_in_result = {entry["name"] for entry in stats.values()}
+        assert names_in_result == {"NonExistentAlpha", "NonExistentBeta"}
+
 
 class TestMediaRoundTrip:
     def test_store_then_retrieve(self, col: None) -> None:
@@ -329,6 +380,35 @@ class TestMediaRoundTrip:
         retrieved_b64 = invoke("retrieveMediaFile", filename=filename)
         assert retrieved_b64 is not False
         assert base64.b64decode(retrieved_b64) == payload
+
+    def test_store_clean_filename_returns_exact_name_and_retrieves(
+        self, col: None
+    ) -> None:
+        """storeMediaFile with a clean filename: returned name equals input AND
+        retrieveMediaFile round-trips the bytes back correctly.
+
+        This validates the critic HIGH fix: we now return the actual stored
+        filename from write_data() rather than blindly echoing the input.  For
+        clean filenames (no path separators or special chars) the two values
+        are equal, so the tilts-client assertion `result == filename` holds.
+        """
+        payload = b"critic-fix-media-roundtrip-content"
+        filename = "acs-critic-fix-clean.txt"
+        b64_payload = base64.b64encode(payload).decode("ascii")
+
+        stored = invoke("storeMediaFile", filename=filename, data=b64_payload)
+
+        # For a clean filename, stored name must equal the requested name
+        assert stored == filename, (
+            f"Expected stored filename {filename!r}, got {stored!r}"
+        )
+
+        # Bytes must survive the round-trip
+        retrieved_b64 = invoke("retrieveMediaFile", filename=stored)
+        assert retrieved_b64 is not False, "File not found after store"
+        assert base64.b64decode(retrieved_b64) == payload, (
+            "Retrieved bytes differ from stored bytes"
+        )
 
     def test_retrieve_missing_returns_false(self, col: None) -> None:
         result = invoke("retrieveMediaFile", filename="no-such-file-xyz.mp3")

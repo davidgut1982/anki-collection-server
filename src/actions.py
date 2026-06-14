@@ -149,6 +149,14 @@ def _add_note(params: dict) -> int | None:
 
     note.tags = list(tags)
 
+    # duplicate_or_empty() returns: 0 = ok, 1 = empty, 2 = duplicate.
+    # col.add_note() does NOT raise on duplicate in anki 25.9.2 — it silently
+    # creates the note.  We guard explicitly so the server envelope returns
+    # {"result": null, "error": "..."}, which the tilts client handles via its
+    # `result is None` guard.
+    if note.duplicate_or_empty() == 2:
+        raise ValueError("cannot create note because it is a duplicate")
+
     with col_mod._col_lock:
         col.add_note(note, did)
 
@@ -316,10 +324,12 @@ def _get_deck_stats(params: dict) -> dict[str, dict]:
     for name in deck_names_param:
         deck = deck_by_name.get(name)
         if deck is None:
-            # Deck doesn't exist; return zeros
-            did = 0
-            result[str(did)] = {
-                "deck_id": did,
+            # Deck doesn't exist; return zeros under a DISTINCT key so that N
+            # missing decks produce N entries rather than all collapsing to the
+            # single key "0" (did=0 is used for every absent deck, causing
+            # later entries to overwrite earlier ones in the result dict).
+            result[f"missing:{name}"] = {
+                "deck_id": 0,
                 "name": name,
                 "new_count": 0,
                 "learn_count": 0,
@@ -375,7 +385,9 @@ def _unsuspend(params: dict) -> None:
 
 
 def _model_names(params: dict) -> list[str]:
-    return list(_col().models.all_names())
+    # all_names() is deprecated in anki 25.9.2; use all_names_and_ids() instead.
+    # Each item is a protobuf NotetypeNameId with .name and .id attributes.
+    return [nt.name for nt in _col().models.all_names_and_ids()]
 
 
 def _create_model(params: dict) -> dict:
@@ -449,12 +461,21 @@ def _set_specific_value_of_card(params: dict) -> list:
 
 
 def _store_media_file(params: dict) -> str:
-    """Write base64-encoded data to the media folder and return the stored filename."""
+    """Write base64-encoded data to the media folder and return the stored filename.
+
+    Returns the ACTUAL filename used by Anki, which may differ from the
+    requested ``filename`` when Anki sanitizes it (e.g. forward slashes are
+    stripped: ``"a/b.mp3"`` → ``"ab.mp3"``).  Callers must use the returned
+    value — not the requested name — to look up the file afterwards.  For
+    clean filenames (no path separators or special characters) the returned
+    name equals the input name, so existing tilts-client assertions of the
+    form ``assert result == filename`` continue to hold.
+    """
     col = _col()
     filename: str = params.get("filename", "")
     data_b64: str = params.get("data", "")
     raw: bytes = base64.b64decode(data_b64)
-    stored = col.media.write_data(filename, raw)
+    stored: str = col.media.write_data(filename, raw)
     return stored
 
 

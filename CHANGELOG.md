@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (critic HIGH/MEDIUM — actions.py)
+
+- **`addNote` duplicate detection** (`_add_note`): `col.add_note()` in anki 25.9.2
+  does NOT raise on duplicate — it silently creates the note.  Added an explicit
+  `note.duplicate_or_empty() == 2` guard before `col.add_note()` that raises
+  `ValueError("cannot create note because it is a duplicate")`.  The server envelope
+  converts this to `{"result": null, "error": "..."}` which the tilts client handles
+  via its `result is None` guard.  (Critic HIGH.)
+
+- **`getDeckStats` missing-deck key collision** (`_get_deck_stats`): previously all
+  unknown decks used `did=0` as the result key, so N missing decks collapsed to one
+  `"0"` entry (each silently overwrote the last).  Now each missing deck gets the
+  distinct key `f"missing:{name}"`, ensuring N missing → N result entries with the
+  correct `name` field per entry.  (Critic HIGH.)
+
+- **`storeMediaFile` filename contract** (`_store_media_file`): now always returns the
+  actual stored filename from `col.media.write_data()` (which may be sanitized, e.g.
+  `"a/b.mp3"` → `"ab.mp3"`).  Added docstring noting the sanitization behaviour and
+  that callers must use the returned value.  For clean filenames the returned value
+  equals the input, so tilts-client assertions remain valid.  (Critic HIGH.)
+
+- **`modelNames` deprecation** (`_model_names`): replaced the deprecated
+  `col.models.all_names()` call with
+  `[nt.name for nt in col.models.all_names_and_ids()]`.  Each item returned by
+  `all_names_and_ids()` is a protobuf `NotetypeNameId` with `.name` and `.id`
+  attributes.  Silences the anki 25.9.2 deprecation warning.  (Critic MEDIUM.)
+
+### Added (tests — actions.py critic fixes)
+
+- `TestAddNoteDuplicateDetection::test_add_duplicate_raises_value_error`: adds a note
+  then adds the same note again; asserts the second call raises `ValueError` matching
+  `"duplicate"`.
+- `TestGetDeckStats::test_deck_stats_two_missing_decks_produce_two_entries`: calls
+  `getDeckStats` with two non-existent deck names; asserts the result dict has exactly
+  2 distinct entries with the correct `name` fields.
+- `TestMediaRoundTrip::test_store_clean_filename_returns_exact_name_and_retrieves`:
+  stores a file with a clean (no-slash) filename; asserts the returned stored name
+  equals the input name AND `retrieveMediaFile` round-trips the bytes correctly.
+
+  Total test count: 25 → 28 (all pass, 0.32 s).
+
 ### Added
 - `src/actions.py`: Complete `ACTIONS` dispatch dict implementing all CRUD/media/stats
   AnkiConnect handlers required by the Tilts client (Step 6).  Handlers ported from
