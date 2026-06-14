@@ -1,0 +1,79 @@
+# docker-compose.example.yml
+#
+# Reference example showing anki-collection-server paired with a self-hosted
+# anki-sync-server. Copy and adapt — do NOT use this file directly in
+# production without replacing placeholder values.
+#
+# Usage:
+#   cp docker-compose.example.yml docker-compose.yml
+#   # Edit paths, credentials, and ports below, then:
+#   docker compose up -d
+
+services:
+
+  # --------------------------------------------------------------------------
+  # AnkiConnect-compatible server (headless, no Qt)
+  # --------------------------------------------------------------------------
+  anki-collection-server:
+    image: ghcr.io/your-org/anki-collection-server:latest
+    # Or build locally:
+    # build: .
+    restart: unless-stopped
+    ports:
+      - "8765:8765"          # AnkiConnect wire protocol
+    volumes:
+      # Mount the directory containing your .anki2 collection.
+      # The file must NOT be open in Anki Desktop at the same time.
+      - /path/to/your/anki/collection:/data/collection:rw
+    environment:
+      # Path inside the container to the .anki2 file.
+      ANKI_COLLECTION_PATH: /data/collection/collection.anki2
+
+      # AnkiWeb / self-hosted sync server (set in Step 8)
+      ANKI_SYNC_ENDPOINT: http://anki-sync:27701
+      ANKI_SYNC_USER: your-ankiweb-email@example.com
+      ANKI_SYNC_PASSWORD: your-ankiweb-password   # use a Docker secret in prod
+
+    # Run as the user that owns the collection (UID:GID).
+    # Adjust to match the actual owner of your .anki2 file.
+    user: "1005:136"
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -sf
+        - -X
+        - POST
+        - http://localhost:8765
+        - -H
+        - "Content-Type: application/json"
+        - -d
+        - '{"action":"version","version":6}'
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      anki-sync:
+        condition: service_healthy
+
+  # --------------------------------------------------------------------------
+  # Self-hosted Anki sync server (optional)
+  # Remove this service if you sync directly to AnkiWeb.
+  # --------------------------------------------------------------------------
+  anki-sync:
+    image: ghcr.io/luckyturtledev/anki:latest
+    restart: unless-stopped
+    ports:
+      - "27701:27701"        # AnkiWeb sync port
+    volumes:
+      - /path/to/your/sync-data:/data:rw   # persistent sync data
+    environment:
+      SYNC_USER1: your-ankiweb-email@example.com:your-sync-password
+      # Add more users: SYNC_USER2, SYNC_USER3, ...
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:27701"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

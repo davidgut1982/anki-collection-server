@@ -1,0 +1,8 @@
+# anki: pinned to match Anki Desktop 25.09.2 collection schema.
+# PyPI uses dotted notation: 25.09.2 on desktop == 25.9.2 on PyPI.
+# Do NOT upgrade without verifying collection schema compatibility.
+anki==25.9.2
+
+# Flask: minimal HTTP layer for the AnkiConnect wire protocol.
+# Using 3.1.x (latest stable as of scaffold date).
+flask==3.1.1
