@@ -631,3 +631,128 @@ class TestGetCollectionStatsHTML:
         assert len(html) > 0
         # Should be valid enough for tilts' connection-ping use
         assert "<" in html
+
+
+class TestGetDeckStatsSubdeckRollup:
+    """Regression tests for getDeckStats v25.9.2-3 fix.
+
+    Two bugs were fixed:
+      (a) Day-gating bug: newToday/lrnToday/revToday cache returns 0 when
+          day_idx != today, so new/learn/review counts were always 0 on a
+          fresh scheduler day with no prior study.  Fix: use deck_due_tree()
+          which always returns correct due counts.
+      (b) Parent-only total: SQL ``WHERE did = parent_id`` counted only direct
+          cards in the parent deck, missing subdecks.  Fix: use find_cards()
+          with ``deck:"name"`` which includes subdecks.
+    """
+
+    def test_subdeck_rollup_and_nozero_counts(self) -> None:
+        """getDeckStats for a parent deck must roll up subdeck cards.
+
+        Setup:
+          - Parent deck "ACS-Test-Parent"
+          - Child deck  "ACS-Test-Parent::Child"
+          - Add 2 new notes to the parent deck
+          - Add 1 new note to the child deck
+          - Call getDeckStats for "ACS-Test-Parent"
+
+        Assertions:
+          1. total_in_deck == 3 (2 parent cards + 1 child card, NOT parent-only)
+             Note: each "Basic (and reversed card)" note creates 2 cards, so
+             3 notes → 6 cards.  We check >= 3 to be note-type-agnostic.
+          2. new_count > 0 — deck_due_tree() returns non-zero even before
+             study has begun on this scheduler day (regression: old day-gated
+             code returned 0 until first review of the day).
+          3. Result keyed by str(deck_id), not "missing:..." sentinel.
+        """
+        import shutil
+        import tempfile
+
+        private_dir = Path(tempfile.mkdtemp(prefix="acs-subdeck-", dir="/tmp"))
+        col_path = private_dir / "collection.anki2"
+        shutil.copy2(_COMMITTED_FIXTURE, col_path)
+        col_path.chmod(0o600)
+
+        try:
+            try:
+                col_mod.manager.close()
+            except Exception:
+                pass
+            col_mod.manager.open(col_path)
+
+            parent_deck = "ACS-Test-Parent"
+            child_deck = "ACS-Test-Parent::Child"
+
+            # Ensure both decks exist
+            invoke("createDeck", deck=parent_deck)
+            invoke("createDeck", deck=child_deck)
+
+            model = "Basic (and reversed card)"
+
+            # Add 2 notes to parent deck
+            for i in range(2):
+                invoke(
+                    "addNote",
+                    note={
+                        "deckName": parent_deck,
+                        "modelName": model,
+                        "fields": {
+                            "Front": f"acs-subdeck-parent-{i}-{id(col_path)}",
+                            "Back": "back",
+                        },
+                        "tags": [],
+                    },
+                )
+
+            # Add 1 note to child deck
+            invoke(
+                "addNote",
+                note={
+                    "deckName": child_deck,
+                    "modelName": model,
+                    "fields": {
+                        "Front": f"acs-subdeck-child-0-{id(col_path)}",
+                        "Back": "back",
+                    },
+                    "tags": [],
+                },
+            )
+
+            stats = invoke("getDeckStats", decks=[parent_deck])
+            assert isinstance(stats, dict), f"Expected dict, got {type(stats)}"
+            assert len(stats) == 1, f"Expected 1 entry, got {len(stats)}: {list(stats.keys())}"
+
+            key = list(stats.keys())[0]
+            assert not key.startswith("missing:"), (
+                f"Deck reported as missing: {key!r}. "
+                f"Deck may not have been created or found in tree."
+            )
+
+            entry = stats[key]
+            total = entry["total_in_deck"]
+            new_count = entry["new_count"]
+
+            # Each "Basic (and reversed card)" note creates 2 cards.
+            # 3 notes × 2 cards = 6 cards total.  Parent-only would see 4.
+            # We assert >= 6 to confirm subdeck rollup.
+            assert total >= 6, (
+                f"total_in_deck={total} — expected >= 6 (3 notes × 2 cards, "
+                f"including child deck).  If total == 4, the fix is NOT working "
+                f"and subdeck cards are still excluded (parent-only count)."
+            )
+
+            # Regression (a): new_count must be non-zero — all 3 notes are new.
+            # Old day-gated implementation zeroed this on a fresh scheduler day.
+            assert new_count > 0, (
+                f"new_count={new_count} — expected > 0.  {total} total cards "
+                f"were added as new, so deck_due_tree() must report them.  "
+                f"If new_count == 0 this is the day-gating bug (newToday cache "
+                f"day_idx mismatch) — fix was NOT applied correctly."
+            )
+
+        finally:
+            try:
+                col_mod.manager.close()
+            except Exception:
+                pass
+            shutil.rmtree(private_dir, ignore_errors=True)

@@ -337,36 +337,61 @@ def _deck_names(params: dict) -> list[str]:
     return [nid.name for nid in col.decks.all_names_and_ids()]
 
 
+def _build_deck_tree_index(node: Any, index: dict | None = None) -> dict:
+    """Recursively index DeckTreeNode objects by their full deck name.
+
+    ``deck_due_tree()`` returns a virtual root node (name="") whose children
+    are the top-level decks.  Each node exposes:
+      - node.name          full deck name (e.g. "Latvian (ChatGPT)")
+      - node.deck_id       integer deck id
+      - node.new_count     new cards due today (respects daily limit, rolls up subdecks)
+      - node.learn_count   learning cards due today (rolls up subdecks)
+      - node.review_count  review cards due today (rolls up subdecks)
+      - node.children      list of child DeckTreeNode objects
+
+    Returns:
+        {deck_name: DeckTreeNode} for every node in the tree (excluding root).
+    """
+    if index is None:
+        index = {}
+    # Skip the virtual root (name == "")
+    if node.name:
+        index[node.name] = node
+    for child in node.children:
+        _build_deck_tree_index(child, index)
+    return index
+
+
 def _get_deck_stats(params: dict) -> dict[str, dict]:
     """Return deck stats keyed by deck id (as string).
 
     AnkiConnect shape consumed by tilts client:
       {str(deck_id): {deck_id, name, new_count, learn_count, review_count, total_in_deck}}
 
-    Anki 25.9.2 stores today's counts in deck.lrnToday/revToday/newToday as
-    ``[day_number, count]``.  day_number matches ``col.sched.today`` only
-    when there was study activity on the current scheduler day; otherwise it
-    holds a stale day number and the count must be treated as zero.
+    FIX (v25.9.2-3): uses ``col.sched.deck_due_tree()`` — the same source
+    Anki's own UI reads — instead of the stale ``newToday/lrnToday/revToday``
+    cached fields.  The tree nodes already:
+      (a) respect the daily new/review limits for the current scheduler day, and
+      (b) roll up counts from all child decks into the parent node.
 
-    Total-in-deck is derived from the ``cards`` table.
+    This fixes two bugs in the previous implementation:
+      - Day-gating bug: ``[day_idx, count]`` zeroed counts on a fresh scheduler
+        day because day_idx didn't match ``col.sched.today`` until study began.
+      - Parent-only total: ``SELECT count(*) … WHERE did = ?`` counted only the
+        parent deck's own cards, not subdecks.  Anki search ``deck:"name"``
+        (without a wildcard) includes subdecks, so ``find_cards`` is used instead.
     """
     col = _col()
     deck_names_param: list[str] = params.get("decks", [])
-    today_day = col.sched.today
 
-    # Build total card counts by deck id via SQL (all cards, not just due)
-    total_by_did: dict[int, int] = dict(
-        col.db.all("select did, count(*) from cards group by did")
-    )
-
-    # Build lookup: name -> deck dict
-    all_decks = col.decks.all()
-    deck_by_name: dict[str, dict] = {d["name"]: d for d in all_decks}
+    # Build tree index: name -> DeckTreeNode (counts already rolled up + day-limited)
+    tree = col.sched.deck_due_tree()
+    tree_index = _build_deck_tree_index(tree)
 
     result: dict[str, dict] = {}
     for name in deck_names_param:
-        deck = deck_by_name.get(name)
-        if deck is None:
+        node = tree_index.get(name)
+        if node is None:
             # Deck doesn't exist; return zeros under a DISTINCT key so that N
             # missing decks produce N entries rather than all collapsing to the
             # single key "0" (did=0 is used for every absent deck, causing
@@ -381,20 +406,19 @@ def _get_deck_stats(params: dict) -> dict[str, dict]:
             }
             continue
 
-        did = int(deck["id"])
-        total = total_by_did.get(did, 0)
+        did = int(node.deck_id)
 
-        # Extract today's counts — lrnToday/revToday/newToday = [day_idx, count]
-        def _today_count(field: str) -> int:
-            pair = deck.get(field, [0, 0])
-            return int(pair[1]) if (len(pair) == 2 and pair[0] == today_day) else 0
+        # total_in_deck: bare deck:"name" search includes subdecks in Anki's
+        # search engine (no wildcard needed).  This gives the correct total
+        # across the full subtree, matching what Anki shows in the deck browser.
+        total = len(col.find_cards(f'deck:"{name}"'))
 
         result[str(did)] = {
             "deck_id": did,
             "name": name,
-            "new_count": _today_count("newToday"),
-            "learn_count": _today_count("lrnToday"),
-            "review_count": _today_count("revToday"),
+            "new_count": int(node.new_count),
+            "learn_count": int(node.learn_count),
+            "review_count": int(node.review_count),
             "total_in_deck": total,
         }
 
