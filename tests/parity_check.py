@@ -38,7 +38,6 @@ If anki-headless:8765 is unreachable the script reports SKIPPED and exits 0.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import socket
 import sys

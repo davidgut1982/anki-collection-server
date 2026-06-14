@@ -546,16 +546,17 @@ def _delete_media_file(params: dict) -> None:
 
 
 def _get_num_cards_reviewed_today(params: dict) -> int:
-    """Count revlog entries since today's scheduler day cutoff.
+    """Count revlog entries that fall within today's scheduler day.
 
     ``col.sched.day_cutoff`` is the Unix timestamp (seconds) at which the
-    current Anki scheduler day started.  revlog ids are timestamps in
-    *milliseconds* since epoch.
+    current Anki scheduler day *ends* (the next rollover, in the future).
+    The start of today is therefore ``day_cutoff - 86400``.  revlog ids are
+    timestamps in *milliseconds* since epoch.
     """
     col = _col()
-    cutoff_ms = col.sched.day_cutoff * 1000
+    day_start_ms = (col.sched.day_cutoff - 86400) * 1000
     return int(
-        col.db.scalar("select count() from revlog where id >= ?", cutoff_ms) or 0
+        col.db.scalar("select count() from revlog where id >= ?", day_start_ms) or 0
     )
 
 

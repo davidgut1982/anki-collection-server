@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (QA-confirmed bug: getNumCardsReviewedToday returned 0)
+
+- **`src/actions.py` — `_get_num_cards_reviewed_today`**: `col.sched.day_cutoff` is the
+  Unix timestamp at which the current scheduler day *ends* (the next rollover, in the
+  future), not when it started.  The previous query used `id >= day_cutoff * 1000` as the
+  lower bound, which is a future timestamp — matching zero rows until the day rolled over.
+  Fixed to `id >= (day_cutoff - 86400) * 1000` (start of today = end-of-today minus one
+  full day in seconds).  Also corrected the misleading docstring that claimed `day_cutoff`
+  marks the day's start.
+
+- **`tests/test_actions.py` — `TestGetNumCardsReviewedToday::test_counts_synthetic_today_reviews_nonzero`**:
+  New regression test that inserts two synthetic revlog rows dated one and two hours before
+  end-of-day (well within today) into a private writable copy of the fixture, then asserts
+  `getNumCardsReviewedToday` returns ≥ 2 (non-zero) and agrees with today's bucket from
+  `getNumCardsReviewedByDay`.  The test failed against the old code (returned 0) and passes
+  against the fix — the bug QA reported is now covered by the test suite.
+
 ### Added (Step 9 — self-contained test fixture + wire-shape parity)
 
 - **`tests/fixtures/test_collection.anki2`** (committed, ~136 KB): a programmatically

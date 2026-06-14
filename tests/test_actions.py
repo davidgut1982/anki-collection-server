@@ -462,6 +462,104 @@ class TestGetNumCardsReviewedToday:
         assert isinstance(count, int)
         assert count >= 0
 
+    def test_counts_synthetic_today_reviews_nonzero(self) -> None:
+        """Regression: day_cutoff is end-of-day (future), not start-of-day.
+
+        Old code used ``day_cutoff * 1000`` as the lower bound, which is a
+        FUTURE timestamp — so zero rows matched until the day rolled over.
+        Fixed code uses ``(day_cutoff - 86400) * 1000`` (start of today).
+
+        Strategy: open a fresh writable copy of the fixture, insert two
+        synthetic revlog rows timestamped ONE HOUR before end-of-day (well
+        within today), then assert getNumCardsReviewedToday == 2 and that
+        it agrees with today's bucket in getNumCardsReviewedByDay.
+        """
+        import sqlite3
+
+        # ---- set up a private writable copy so we don't pollute other tests ----
+        private_dir = Path(tempfile.mkdtemp(prefix="acs-daycutoff-", dir="/tmp"))
+        col_path = private_dir / "collection.anki2"
+        shutil.copy2(_COMMITTED_FIXTURE, col_path)
+        col_path.chmod(0o600)
+
+        try:
+            # ---- open collection to learn day_cutoff and a real card id --------
+            try:
+                col_mod.manager.close()
+            except Exception:
+                pass
+            col_mod.manager.open(col_path)
+            col_obj = col_mod.manager.col
+
+            day_cutoff: int = col_obj.sched.day_cutoff  # end of today (future)
+            day_start_ms = (day_cutoff - 86400) * 1000  # start of today
+
+            # Pick a real card id from the collection (revlog requires valid cid)
+            card_ids = col_obj.db.list("select id from cards limit 1")
+            assert card_ids, "Fixture must have at least one card"
+            cid = card_ids[0]
+
+            # Timestamps: 1 hour and 2 hours before end-of-day (clearly today)
+            ts_1h = (day_cutoff - 3600) * 1000
+            ts_2h = (day_cutoff - 7200) * 1000
+
+            # Sanity: both must be >= day_start_ms (i.e. within today)
+            assert ts_1h >= day_start_ms, "ts_1h must fall within today"
+            assert ts_2h >= day_start_ms, "ts_2h must fall within today"
+
+            # Insert two synthetic revlog rows directly via sqlite3 (bypasses
+            # Anki's ORM to keep the test self-contained and fast).
+            col_mod.manager.close()
+
+            con = sqlite3.connect(str(col_path))
+            con.execute(
+                "INSERT INTO revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type) "
+                "VALUES (?, ?, -1, 1, 1, 1, 2500, 5000, 1)",
+                (ts_1h, cid),
+            )
+            con.execute(
+                "INSERT INTO revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type) "
+                "VALUES (?, ?, -1, 2, 1, 1, 2500, 6000, 1)",
+                (ts_2h, cid),
+            )
+            con.commit()
+            con.close()
+
+            # ---- re-open via manager and run the actions ----------------------
+            col_mod.manager.open(col_path)
+
+            today_count = invoke("getNumCardsReviewedToday")
+            assert today_count >= 2, (
+                f"Expected >= 2 reviews today (inserted 2 synthetic rows), "
+                f"got {today_count}. This indicates day_cutoff is still being "
+                f"used as the lower bound (end-of-day) instead of "
+                f"day_cutoff - 86400 (start-of-day)."
+            )
+
+            # ---- cross-check with getNumCardsReviewedByDay -------------------
+            from datetime import datetime, timezone
+
+            by_day: list[list] = invoke("getNumCardsReviewedByDay")  # type: ignore[assignment]
+            # Determine what "today" looks like as a UTC date string
+            today_utc = datetime.fromtimestamp(ts_1h / 1000, tz=timezone.utc).strftime(
+                "%Y-%m-%d"
+            )
+            by_day_dict = {d: c for d, c in by_day}
+            today_by_day = by_day_dict.get(today_utc, 0)
+            assert today_by_day == today_count, (
+                f"getNumCardsReviewedToday ({today_count}) must agree with "
+                f"getNumCardsReviewedByDay today bucket '{today_utc}' "
+                f"({today_by_day}). Mismatch means the two functions disagree "
+                f"on what counts as 'today'."
+            )
+
+        finally:
+            try:
+                col_mod.manager.close()
+            except Exception:
+                pass
+            shutil.rmtree(private_dir, ignore_errors=True)
+
 
 class TestGetReviewsOfCards:
     def test_reviews_shape(self, col: None) -> None:
