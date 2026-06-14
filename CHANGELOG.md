@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (Critic HIGH — lock-free /health so sync cannot trip Docker healthcheck)
+
+- **`CollectionManager.health()` blocks while sync holds `_col_lock`** (Critic HIGH):
+  With `waitress threads=1`, the single worker thread is occupied during a
+  multi-second sync and cannot serve `GET /health` at all — Docker's 5-second
+  `HEALTHCHECK` times out and marks the container unhealthy mid-sync.  The
+  cutover path performs a sync, so this was a latent production failure.
+
+  **Fix chosen: option (a) — `threads=2` + `_col_lock`-serialised collection
+  access + non-blocking `health()`.**
+
+  - `waitress` bumped from `threads=1` to `threads=2` in `server.py`.  One
+    thread handles collection operations (`POST /`); the second thread handles
+    `GET /health`.  This is the only change that can make `/health` responsive
+    during a sync — no amount of lock restructuring helps when there is only
+    one thread to serve requests.
+
+  - **Single-writer safety preserved:** ALL collection access (every dispatched
+    action in `POST /`) remains serialised through `_col_lock` (RLock).  The
+    second thread never acquires the lock for writes; it uses
+    `acquire(blocking=False)` in `health()` only.
+
+  - **`CollectionManager.health()` redesigned** (non-blocking):
+    1. Lock-free `self._collection is not None` check — if `None`, raise
+       `RuntimeError` immediately (server maps to 503).
+    2. `_col_lock.acquire(blocking=False)`:
+       - **Lock free** (normal path): acquire succeeds → `SELECT 1` liveness
+         probe + `card_count` + `note_count` → release →
+         `{"status":"ok","collection_path":…,"card_count":…,"note_count":…}`.
+       - **Lock held** (sync / write in progress): return IMMEDIATELY
+         `{"status":"ok","syncing":true,"collection_path":…}` — no blocking,
+         no DB probe, no counts.  The healthcheck never waits.
+
+  Confirmed: `GET /health` returns in < 1 s (measured ~0 ms) even while
+  `_col_lock` is held for a simulated 3-second sync on the other thread.
+  Normal `/health` still returns `card_count` and `note_count`.
+
+- **Misleading comment on `waitress.serve()` return** (Critic LOW):
+  The previous comment stated "waitress.serve() returns when the server is
+  stopped externally" without explaining the mechanism.  Updated to clarify:
+  `_shutdown()` calls `sys.exit(0)` → waitress catches `SystemExit` →
+  `serve()` returns.  The `close()` call after `serve()` is an idempotent
+  no-op safety net for any other exit path.
+
+### Added (lock-free health tests)
+
+- `tests/test_health_lock_free.py` — 8 new tests (all pass, no Anki collection
+  required; uses `unittest.mock`):
+  - `test_health_raises_when_collection_not_open` — 503 path when `_collection is None`.
+  - `test_health_returns_counts_when_lock_free` — normal path: SELECT 1 + counts returned.
+  - `test_health_returns_syncing_when_lock_held` — lock held on background
+    thread; health returns `syncing=True` in < 1 s, no `card_count`/`note_count`.
+  - `test_health_responds_under_1s_while_lock_held_for_3s` — 3-second simulated
+    sync; health measured at << 1 s from a second thread.
+  - `test_concurrent_writes_serialised_by_col_lock` — 4 concurrent threads each
+    acquire `_col_lock`; asserts no overlap inside the critical section.
+  - `test_flask_health_endpoint_ok_with_counts` — Flask test client: 200 + counts.
+  - `test_flask_health_endpoint_200_syncing_when_lock_held` — Flask test client:
+    200 + `syncing=True` while lock held; elapsed < 1 s.
+  - `test_flask_health_endpoint_503_when_collection_not_open` — Flask test client: 503.
+
+  Total test count: 68 → 76 (all pass).
+
 ### Added — Step 5: server.py full wiring (collection startup + dispatch + graceful shutdown)
 
 - `src/server.py`: upgraded from the Step-2 stub to the production AnkiConnect server.

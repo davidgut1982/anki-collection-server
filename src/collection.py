@@ -8,8 +8,10 @@ Responsibilities (Step 4):
     Desktop instance) fails immediately instead of silently corrupting SQLite.
   - Expose ``CollectionManager.col`` (property) and the module-level ``get_col()``
     convenience function that other modules import.
-  - Expose ``_col_lock`` (a ``threading.Lock``) that callers may use to serialise
-    multi-step collection operations should the worker count ever exceed 1.
+  - Expose ``_col_lock`` (a ``threading.RLock``) that callers MUST use to serialise
+    all collection operations.  The server runs with ``waitress threads=2`` so that
+    ``GET /health`` can always be served on the second thread while a long sync or
+    write holds the lock on the first thread.
   - Provide ``health()`` for the ``GET /health`` endpoint (Step 5).
 
 Environment variables
@@ -21,9 +23,24 @@ ANKI_COLLECTION_PATH
 
 Thread-safety note
 ------------------
-waitress is started with ``threads=1``, so in practice only one request runs
-at a time.  The module-level ``_col_lock`` is exported so callers can wrap
-multi-step collection operations if that constraint is ever relaxed:
+waitress is started with ``threads=2``.  **ALL** collection access (every
+dispatched action) is serialised through ``_col_lock`` so only one collection
+operation runs at a time — the second thread exists *solely* so that
+``GET /health`` can respond while a long-running sync holds the lock on the
+first thread.
+
+``health()`` is deliberately lock-free (non-blocking acquire):
+  - If the lock is free, it acquires it, runs a lightweight ``SELECT 1`` probe,
+    and returns counts.
+  - If the lock is held (sync or write in progress), it returns immediately with
+    ``{"status": "ok", "syncing": true, ...}`` — no blocking, no timeout risk.
+
+This ensures Docker's ``HEALTHCHECK`` (5-second timeout) is never tripped by a
+multi-second sync operation.
+
+Single-writer guarantee is preserved: the extra thread only serves /health;
+it never performs collection writes or reads (other than the non-blocking
+lock-free check of ``self._collection is not None``).
 
     import src.collection as col_mod
 
@@ -60,9 +77,9 @@ _DEFAULT_COLLECTION_PATH = "/config/.local/share/Anki2/User 1/collection.anki2"
 # ---------------------------------------------------------------------------
 # Public threading lock
 # ---------------------------------------------------------------------------
-# Serialise all collection access when needed.  With waitress threads=1 this
-# is never actually contended, but it costs nothing and keeps the door open
-# for future configuration changes.
+# Serialise ALL collection access.  With waitress threads=2 this is the only
+# thing preventing concurrent collection operations — it MUST be acquired by
+# every handler before touching the collection.
 #
 # RLock (reentrant) rather than Lock: the server dispatch layer acquires this
 # lock around every handler call for defense-in-depth; individual handlers
@@ -70,6 +87,8 @@ _DEFAULT_COLLECTION_PATH = "/config/.local/share/Anki2/User 1/collection.anki2"
 # mutation sequences.  An RLock allows the SAME thread to re-acquire it
 # without deadlocking — a plain Lock would block forever on the inner
 # acquisition.
+#
+# health() uses acquire(blocking=False) so it never waits on a long sync.
 _col_lock: threading.RLock = threading.RLock()
 
 
@@ -233,38 +252,84 @@ class CollectionManager:
     def health(self) -> dict[str, Any]:
         """Return a health-check dict for the ``GET /health`` endpoint.
 
-        Runs a lightweight ``SELECT 1`` probe to confirm the SQLite handle is
-        alive, then returns card and note counts.
+        Designed to NEVER block, so it cannot trip Docker's 5-second
+        HEALTHCHECK timeout even when a long sync is in progress.
+
+        Strategy
+        --------
+        1. Check ``self._collection is not None`` WITHOUT the lock.  If the
+           collection is not open, raise ``RuntimeError`` immediately (the
+           caller maps this to a 503 response).
+
+        2. Attempt a NON-BLOCKING lock acquire
+           (``_col_lock.acquire(blocking=False)``).
+
+           - **Lock free** (normal case): acquire succeeds → run a lightweight
+             ``SELECT 1`` liveness probe + fetch counts → release the lock →
+             return ``{"status": "ok", "card_count": …, "note_count": …, …}``.
+
+           - **Lock held** (sync / write in progress on the other thread):
+             return IMMEDIATELY ``{"status": "ok", "syncing": true, …}``
+             WITHOUT the counts and WITHOUT blocking.  The collection is alive
+             (step 1 confirmed it); we simply cannot safely read counts right
+             now.
 
         Returns
         -------
         dict
-            ``{"status": "ok", "collection_path": str,
+            Normal: ``{"status": "ok", "collection_path": str,
             "card_count": int, "note_count": int}``
+
+            Busy:   ``{"status": "ok", "syncing": True, "collection_path": str}``
 
         Raises
         ------
         RuntimeError
-            If the collection is not open.
+            If the collection is not open (caller returns 503).
         Exception
-            If the DB probe fails (the collection handle is broken).
+            If the ``SELECT 1`` probe fails (collection handle is broken).
         """
-        c = self.col
-        # Confirms the SQLite file descriptor is still alive.
-        c.db.scalar("select 1")
+        # Step 1: lock-free None check.  If the collection is not open there
+        # is nothing to probe; raise immediately (server.py maps to 503).
+        if self._collection is None:
+            raise RuntimeError(
+                "Collection is not open. Call CollectionManager.open() "
+                "before accessing health()."
+            )
 
         col_path = (
             str(self._lock_path.parent / "collection.anki2")
             if self._lock_path
-            else (os.environ.get("ANKI_COLLECTION_PATH", _DEFAULT_COLLECTION_PATH))
+            else os.environ.get("ANKI_COLLECTION_PATH", _DEFAULT_COLLECTION_PATH)
         )
 
-        return {
-            "status": "ok",
-            "collection_path": col_path,
-            "card_count": c.card_count(),
-            "note_count": c.note_count(),
-        }
+        # Step 2: non-blocking lock acquire.
+        acquired = _col_lock.acquire(blocking=False)
+        if not acquired:
+            # A sync or write is in progress on the other thread.  Return
+            # immediately — do NOT block waiting for the lock.
+            log.debug(
+                "health(): _col_lock held by another thread, returning syncing=true"
+            )
+            return {
+                "status": "ok",
+                "syncing": True,
+                "collection_path": col_path,
+            }
+
+        try:
+            # Lock is ours.  Run the lightweight DB probe and fetch counts.
+            c = self._collection
+            # Confirms the SQLite file descriptor is still alive.
+            c.db.scalar("select 1")
+            return {
+                "status": "ok",
+                "collection_path": col_path,
+                "card_count": c.card_count(),
+                "note_count": c.note_count(),
+            }
+        finally:
+            _col_lock.release()
 
 
 # ---------------------------------------------------------------------------

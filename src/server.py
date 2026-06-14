@@ -19,12 +19,27 @@ Graceful shutdown:
   process exits.  This flushes the WAL, releases the SQLite handle and the
   fcntl advisory lock.
 
-Single-worker constraint:
-  The SQLite-backed Anki collection is a single-writer database. This server
-  MUST run as a single OS process with exactly ONE thread so that only one
-  Collection handle exists at a time. We use waitress (threads=1) instead of
-  the Flask development server. Do NOT change threads to >1, do NOT run behind
-  a multi-worker WSGI server (gunicorn -w N with N>1, etc.).
+Thread count (threads=2):
+  The SQLite-backed Anki collection is a single-writer database.  All
+  collection access (every dispatched action) is serialised through
+  ``_col_lock`` (RLock) so only one operation runs at a time.
+
+  We run waitress with ``threads=2`` — NOT 1 — specifically so that
+  ``GET /health`` can be served on the second thread while a long-running
+  sync or write holds ``_col_lock`` on the first thread.  Without this,
+  the single worker thread is blocked by the sync and Docker's 5-second
+  HEALTHCHECK times out, marking the container unhealthy mid-sync.
+
+  ``health()`` uses a non-blocking lock acquire and returns
+  ``{"status": "ok", "syncing": true, ...}`` immediately when the lock is
+  held — it never blocks and never touches the collection under contention.
+
+  Single-writer safety guarantee: only the dispatch path (``POST /``)
+  acquires ``_col_lock`` for collection work.  The health path uses
+  ``acquire(blocking=False)`` and performs NO collection writes.
+
+  Do NOT run behind a multi-worker WSGI server (gunicorn -w N with N>1,
+  etc.) — one process, two threads, one collection handle.
 
 Dispatch table:
   DISPATCH is built by merging all action dicts:
@@ -134,9 +149,10 @@ def anki_connect() -> Any:
         log.warning("unsupported action: %r", action)
         return jsonify(err(f"unsupported action: {action}"))
 
-    # Wrap every dispatch in the collection lock (defense-in-depth; the lock
-    # is never contended with waitress threads=1 but prevents silent races if
-    # the thread count is ever raised).
+    # Wrap every dispatch in the collection lock (single-writer guarantee;
+    # with waitress threads=2 the lock is what serialises all collection
+    # operations — health() uses acquire(blocking=False) so it can answer
+    # immediately on the second thread while this lock is held).
     try:
         with col_mod._col_lock:
             result = handler(params)
@@ -243,15 +259,17 @@ if __name__ == "__main__":
     _open_collection_or_exit()
 
     # 3. Start the server (blocks until killed).
-    log.info(
-        "Starting anki-collection-server on 0.0.0.0:8765 (single-threaded, waitress)"
-    )
-    # threads=1 is REQUIRED: the Anki Collection is not thread-safe and SQLite
-    # is single-writer. One request must fully complete before the next begins.
-    # Never increase threads; never add workers; never use a multi-worker server.
-    serve(app, host="0.0.0.0", port=8765, threads=1)
+    log.info("Starting anki-collection-server on 0.0.0.0:8765 (waitress threads=2)")
+    # threads=2: one thread for collection operations (POST /), one for health
+    # checks (GET /health).  All collection access is serialised by _col_lock;
+    # health() uses acquire(blocking=False) so it never blocks on a sync.
+    # Never add more than 2 threads or multiple workers — one collection handle.
+    serve(app, host="0.0.0.0", port=8765, threads=2)
 
-    # 4. waitress.serve() returns when the server is stopped externally.
-    #    Ensure the collection is closed on normal exit as well.
-    log.info("waitress exited — closing collection.")
+    # 4. waitress.serve() returns after the SIGTERM handler calls sys.exit(0):
+    #    _shutdown() → col_mod.manager.close() → sys.exit(0)
+    #    → waitress catches SystemExit → serve() returns.
+    #    The close() below is an idempotent no-op safety net for any other
+    #    exit path (e.g. SIGINT handled differently by the OS).
+    log.info("waitress exited — closing collection (idempotent safety net).")
     col_mod.manager.close()
