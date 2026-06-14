@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (Step 8 — sync.py + fsrs.py)
+
+- `src/sync.py`: Upload-wins sync integration against an AnkiWeb-compatible
+  sync server (e.g. `ghcr.io/luckyturtledev/anki`).
+
+  - `do_sync(force_upload, sync_media)` — full sync state machine:
+    - `FULL_UPLOAD (4)`: server empty → upload.
+    - `FULL_SYNC (2)`: conflict → upload (Tilts wins, logged loudly).
+    - `NORMAL_SYNC (1)`: incremental exchange via `sync_collection`.
+    - `NO_CHANGES (0)`: already in sync.
+    - `force_upload=True`: skips `sync_collection` probe entirely, calls
+      `full_upload_or_download(upload=True)` unconditionally; returns
+      `required=-1`.  Used for the cutover path.
+  - Credentials from `ANKI_SYNC_USERNAME` / `ANKI_SYNC_PASSWORD`, or
+    `ANKI_SYNC_USER1=user:pass` (luckyturtledev convention).
+  - Endpoint from `ANKI_SYNC_ENDPOINT` (default `http://anki-sync:8080`).
+  - `SYNC_ACTIONS` dict (`{"sync": handler}`) for server.py dispatch.
+  - Media sync: `sync_collection(sync_media=True)` covers media in one
+    round-trip; separate `col.sync_media(auth)` is only needed if
+    `sync_media=False` is passed (callers can opt out).
+
+  Confirmed API signatures (anki 25.9.2):
+    - `col.sync_login(username, password, endpoint) -> SyncAuth`
+    - `col.sync_collection(auth, sync_media) -> SyncOutput`
+    - `col.full_upload_or_download(*, auth, server_usn, upload) -> None`
+    - `col.sync_media(auth) -> None`   (separate; exists but not called
+      when `sync_media=True` in `sync_collection`)
+    - `SyncCollectionResponse.required` enum: 0/1/2/4
+
+- `src/fsrs.py`: FSRS enable + optimize helpers for the cutover action.
+
+  - `is_fsrs_enabled() -> bool` — reads `col.get_config("fsrs", False)`.
+  - `enable_fsrs(optimize=True) -> dict` — idempotent enable + optional
+    weight optimization:
+    - `col.set_config("fsrs", True)`
+    - `col._backend.compute_fsrs_params(search="", current_params=[],
+      ignore_revlogs_before_ms=0, num_of_relearning_steps=1,
+      health_check=True)` → 21-float FSRS-6 vector
+    - Applies params to all deck presets: `fsrsWeights`, `fsrsParams5[:17]`,
+      `fsrsParams6` via `col.decks.all_config()` + `update_config()`.
+    - Graceful degradation: optimizer failure → enabled=True, optimized=False
+      (collection keeps default weights rather than crashing).
+  - `FSRS_ACTIONS` dict (`enableFsrs`, `isFsrsEnabled`) for server.py.
+
+  Observed from 3741 revlog entries: `num_params=21`, `fsrs_items=1107`,
+  `health_check_passed=True`.
+
+- `tests/test_fsrs.py`: 6 tests (all pass, 0.71 s):
+  - `is_fsrs_enabled` returns False on fresh backup.
+  - `enable_fsrs(optimize=True)` → `enabled=True optimized=True
+    num_params=21 fsrs_items=1107 health_check_passed=True`.
+  - `is_fsrs_enabled` returns True after enable.
+  - Idempotent second call succeeds.
+  - `optimize=False` path works.
+  - FSRS stays enabled after no-optimize call.
+
+- `tests/test_sync.py`: 3 tests (all pass, 1.04 s) against a disposable
+  `ghcr.io/luckyturtledev/anki` container on port 27798 (production
+  anki-sync on port 27701 is never touched):
+  - First sync: `required=4` (FULL_UPLOAD) → upload succeeds.
+  - Second sync: `required=0` (NO_CHANGES) — already in sync.
+  - Force upload: `required=-1`, `uploaded=True`.
+
 ### Fixed (critic HIGH/LOW — review_session.py)
 
 - **Review-duration timer records ~0 ms (Critic HIGH)** — `card.start_timer()` was
