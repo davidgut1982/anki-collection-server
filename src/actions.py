@@ -590,6 +590,187 @@ def _delete_media_file(params: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Admin — Notes / Decks (destructive write operations)
+# ---------------------------------------------------------------------------
+
+
+def _delete_notes(params: dict) -> None:
+    """Delete notes (and their cards) by note id.
+
+    Input: ``{"notes": [int]}``
+    Output: null
+
+    Empty list is tolerated as a no-op.  Uses ``col.remove_notes()`` which
+    deletes all cards belonging to each note in the same operation.
+
+    Wrap in lock: this is a write operation.
+    """
+    col = _col()
+    note_ids: list[int] = params.get("notes", [])
+    if not note_ids:
+        return None
+    from anki.notes import NoteId  # noqa: PLC0415
+
+    with col_mod._col_lock:
+        col.remove_notes([NoteId(n) for n in note_ids])
+    return None
+
+
+def _delete_decks(params: dict) -> None:
+    """Delete decks (and their cards) by id or name.
+
+    Input: ``{"decks": [int|str], "cardsToo": bool}``
+    Output: null
+
+    - String entries are resolved via ``col.decks.id_for_name()``.
+    - Integer 1 (the built-in Default deck) is silently skipped — Anki does
+      not allow the Default deck to be removed.
+    - ``cardsToo`` is accepted for API compatibility but has no effect:
+      ``col.decks.remove()`` always deletes the deck AND all its cards
+      regardless of the flag (this is Anki 25.9.2 behaviour; there is no
+      "keep cards" variant in the pip API).
+    - Wrap in lock: this is a write operation.
+    """
+    col = _col()
+    decks_param: list[int | str] = params.get("decks", [])
+    # cardsToo accepted but not used — remove() always deletes cards
+    _ = params.get("cardsToo", True)
+
+    from anki.decks import DeckId  # noqa: PLC0415
+
+    deck_ids: list[DeckId] = []
+    for d in decks_param:
+        if isinstance(d, str):
+            did = col.decks.id_for_name(d)
+            if did is None:
+                # Deck name not found — skip silently (idempotent)
+                log.warning("deleteDecks: deck not found by name %r — skipping", d)
+                continue
+            did_int = int(did)
+        else:
+            did_int = int(d)
+
+        if did_int == 1:
+            # Default deck (id=1) cannot be deleted; Anki forbids it.
+            log.warning("deleteDecks: refusing to delete Default deck (id=1) — skipping")
+            continue
+
+        deck_ids.append(DeckId(did_int))
+
+    if not deck_ids:
+        return None
+
+    with col_mod._col_lock:
+        col.decks.remove(deck_ids)
+    return None
+
+
+def _rename_deck(params: dict) -> None:
+    """Rename a deck.
+
+    Input: ``{"deck": int|str, "newName": str}``
+    Output: null
+
+    - ``deck`` may be an integer id or a string name.
+    - Raises ``ValueError`` if the deck is not found.
+    - ``col.decks.rename()`` in anki 25.9.2 does NOT raise on a sibling
+      name collision — instead it appends a ``"+"`` suffix to the new name.
+      We detect this after the rename and raise ``ValueError`` with a clear
+      message so callers can surface the collision to the user.
+    - Wrap in lock: this is a write operation.
+    """
+    col = _col()
+    deck_param: int | str = params.get("deck", "")
+    new_name: str = params.get("newName", "")
+
+    from anki.decks import DeckId  # noqa: PLC0415
+
+    if isinstance(deck_param, str):
+        did = col.decks.id_for_name(deck_param)
+        if did is None:
+            raise ValueError(f"Deck not found: {deck_param!r}")
+        did_int = int(did)
+    else:
+        did_int = int(deck_param)
+        # Verify it exists
+        existing = col.decks.get(DeckId(did_int))
+        if existing is None:
+            raise ValueError(f"Deck not found: id={did_int}")
+
+    with col_mod._col_lock:
+        col.decks.rename(DeckId(did_int), new_name)
+
+    # Detect silently-mangled name (collision appends "+")
+    deck_after = col.decks.get(DeckId(did_int))
+    if deck_after is None:
+        raise ValueError(f"Deck disappeared after rename — unexpected Anki behaviour")
+    actual_name: str = deck_after["name"]
+    if actual_name != new_name:
+        raise ValueError(
+            f"Rename collision: requested {new_name!r} but Anki stored "
+            f"{actual_name!r} — a deck with that name already exists. "
+            f"Rename or remove it first."
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Admin — Models (read-only)
+# ---------------------------------------------------------------------------
+
+
+def _model_field_names(params: dict) -> list[str]:
+    """Return ordered field names for a note type.
+
+    Input: ``{"modelName": str}``
+    Output: ``list[str]``
+
+    Read-only — no lock needed.
+
+    Raises ``ValueError`` if the model is not found.
+    """
+    col = _col()
+    name: str = params.get("modelName", "")
+    nt = col.models.by_name(name)
+    if nt is None:
+        raise ValueError(f"model not found: {name!r}")
+    return [f["name"] for f in nt["flds"]]
+
+
+# ---------------------------------------------------------------------------
+# Admin — Cards (paginated browse, read-only)
+# ---------------------------------------------------------------------------
+
+
+def _find_cards_paginated(params: dict) -> dict:
+    """Return a paginated slice of card ids matching a search query.
+
+    Input:  ``{"query": str, "offset": int = 0, "limit": int = 100}``
+    Output: ``{"cards": [int], "total": int, "offset": int}``
+
+    - Runs the full ``col.find_cards(query)`` search and slices in Python;
+      this is consistent with how AnkiConnect implements pagination (no SQL
+      LIMIT/OFFSET, since Anki's search engine does not expose cursor-based
+      pagination).
+    - ``limit`` is clamped to a maximum of 500 to protect against very large
+      response payloads.
+    - Read-only — no lock needed.
+    """
+    col = _col()
+    query: str = params.get("query", "")
+    offset: int = int(params.get("offset", 0))
+    limit: int = min(int(params.get("limit", 100)), 500)
+
+    all_ids = list(col.find_cards(query))
+    page = all_ids[offset : offset + limit]
+    return {
+        "cards": [int(cid) for cid in page],
+        "total": len(all_ids),
+        "offset": offset,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Stats
 # ---------------------------------------------------------------------------
 
@@ -706,15 +887,22 @@ ACTIONS: dict[str, Any] = {
     "updateNoteFields": _update_note_fields,
     "addTags": _add_tags,
     "removeTags": _remove_tags,
+    # Admin — Notes (destructive)
+    "deleteNotes": _delete_notes,
     # Cards
     "findCards": _find_cards,
     "cardsInfo": _cards_info,
     "cardsToNotes": _cards_to_notes,
     "changeDeck": _change_deck,
+    # Admin — Cards (paginated browse)
+    "findCardsPaginated": _find_cards_paginated,
     # Decks
     "createDeck": _create_deck,
     "deckNames": _deck_names,
     "getDeckStats": _get_deck_stats,
+    # Admin — Decks (destructive + rename)
+    "deleteDecks": _delete_decks,
+    "renameDeck": _rename_deck,
     # Scheduler
     "suspend": _suspend,
     "unsuspend": _unsuspend,
@@ -722,6 +910,8 @@ ACTIONS: dict[str, Any] = {
     "modelNames": _model_names,
     "createModel": _create_model,
     "modelTemplates": _model_templates,
+    # Admin — Models (read-only)
+    "modelFieldNames": _model_field_names,
     # Card field mutation
     "setSpecificValueOfCard": _set_specific_value_of_card,
     # Media

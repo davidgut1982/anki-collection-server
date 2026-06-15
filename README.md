@@ -88,10 +88,14 @@ implemented in subsequent steps.
 |----------|---------|
 | Meta | `version` |
 | Notes | `findNotes`, `notesInfo`, `addNote`, `updateNoteFields`, `addTags`, `removeTags` |
+| Notes (admin) | `deleteNotes` |
 | Cards | `findCards`, `cardsInfo`, `cardsToNotes`, `changeDeck` |
+| Cards (admin) | `findCardsPaginated` |
 | Decks | `createDeck`, `deckNames`, `getDeckStats` |
+| Decks (admin) | `deleteDecks`, `renameDeck` |
 | Scheduler | `suspend`, `unsuspend` |
 | Models | `modelNames`, `createModel`, `modelTemplates` |
+| Models (admin) | `modelFieldNames` |
 | Card mutation | `setSpecificValueOfCard` |
 | Media | `storeMediaFile`, `retrieveMediaFile`, `deleteMediaFile` |
 | Stats | `getNumCardsReviewedToday`, `getNumCardsReviewedByDay`, `getReviewsOfCards`, `getCollectionStatsHTML` |

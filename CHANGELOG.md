@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — admin CRUD actions + paginated browse (feat/admin-actions)
+
+Five new actions supporting the admin UI layer:
+
+#### `deleteNotes`
+- **Params:** `{"notes": [int]}`
+- **Result:** null
+- Calls `col.remove_notes([NoteId(n) for n in notes])` — deletes both the
+  notes and all their associated cards in one operation.
+- Empty list is a no-op.
+- Wrapped in `col_mod._col_lock` (write operation).
+
+#### `deleteDecks`
+- **Params:** `{"decks": [int|str], "cardsToo": bool}` (`cardsToo` optional, default `True`)
+- **Result:** null
+- String entries are resolved via `col.decks.id_for_name()`.
+- Default deck (id=1) is silently skipped — Anki forbids removing it.
+- Non-existent deck names are silently skipped (idempotent).
+- `cardsToo` is accepted for API compatibility but has no effect:
+  `col.decks.remove()` in anki 25.9.2 **always** deletes the deck AND
+  all its cards — there is no "keep cards" variant in the pip API.
+- Wrapped in `col_mod._col_lock` (write operation).
+
+#### `renameDeck`
+- **Params:** `{"deck": int|str, "newName": str}`
+- **Result:** null
+- `deck` may be an integer id or a string name; raises `ValueError` if not found.
+- Calls `col.decks.rename(DeckId(did), new_name)`.
+- **Collision handling:** anki 25.9.2 does NOT raise on a sibling name
+  collision — it silently appends a `"+"` suffix to the new name.  The
+  handler detects this post-rename by comparing `deck["name"]` with the
+  requested name and raises `ValueError("Rename collision: ...")` if they
+  differ, so callers can surface the conflict to the user cleanly.
+- Wrapped in `col_mod._col_lock` (write operation).
+
+#### `modelFieldNames`
+- **Params:** `{"modelName": str}`
+- **Result:** `list[str]`
+- Returns `[f["name"] for f in nt["flds"]]` in insertion order (same order
+  that Anki stores and displays fields).
+- Raises `ValueError("model not found: <name>")` for unknown models.
+- Read-only — no lock.
+
+#### `findCardsPaginated`
+- **Params:** `{"query": str, "offset": int = 0, "limit": int = 100}`
+- **Result:** `{"cards": [int], "total": int, "offset": int}`
+- Runs the full `col.find_cards(query)` search and slices in Python, consistent
+  with AnkiConnect's own pagination approach (no SQL LIMIT/OFFSET).
+- `limit` is clamped to a maximum of 500 to protect against large payloads.
+- Read-only — no lock.
+
+#### Test file: `tests/test_admin_actions.py` (25 tests, all pass, 0.18 s)
+
+- **`TestDeleteNotes`** (3 tests): add-then-delete confirms note absent; empty list
+  is no-op; associated cards are also removed.
+- **`TestDeleteDecks`** (5 tests): delete by name and by id removes deck from
+  `deckNames`; Default deck id=1 is skipped; non-existent name is skipped; cards
+  inside deleted deck are also removed (confirmed `col.decks.remove()` always
+  deletes cards).
+- **`TestRenameDeck`** (4 tests): rename by name and by id reflects in `deckNames`;
+  sibling name collision raises `ValueError` matching `"collision"`; non-existent
+  deck raises `ValueError`.
+- **`TestModelFieldNames`** (5 tests): `Basic` → `["Front", "Back"]`; `Latvian Vocab`
+  → correct 4-field order; 2-field model; unknown model raises `ValueError` matching
+  `"model not found"`; all values are `str`.
+- **`TestFindCardsPaginated`** (8 tests): total matches `findCards`; offset+limit
+  slices correctly; offset past end returns empty `cards`; `limit=600` clamped to 500;
+  default offset=0; default limit=100 (returns all 9 fixture cards); all ids are `int`;
+  impossible query returns `total=0, cards=[]`.
+
+Destructive tests (`deleteNotes`, `deleteDecks`) each open a fresh per-test copy
+of the fixture via a `destructive_col` function-scoped fixture — the session-shared
+`backup_copy` is never modified.
+
+Total test count: 61 (36 existing + 25 new, all pass).
+
 ### Added — modelTemplates action
 
 - **`src/actions.py` — `_model_templates(params)`**: implements the
