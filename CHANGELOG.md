@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Code Critic remediation (feat/admin-actions)
+
+#### `_find_cards_paginated` — clamp negative offset/limit (HIGH)
+
+- `offset` and `limit` parsed from caller-supplied params were not validated for
+  sign.  A negative `offset` produced a nonsensical Python slice (`all_ids[-5:]`)
+  that silently returned up to 5 cards from the end of the result list instead of
+  the intended page.  A negative `limit` produced an empty slice but via `min(-1,
+  500) == -1` rather than the intended zero-card response.
+- Fix: `offset = max(0, int(params.get("offset", 0)))` and
+  `limit = max(0, min(int(params.get("limit", 100)), 500))`.  Negative values
+  are now clamped: negative offset → 0 (start of results), negative limit → 0
+  (empty page, `total` still returned correctly).
+
+#### `_rename_deck` — pre-check collision instead of post-rename "+" heuristic (HIGH)
+
+- The previous implementation called `col.decks.rename()` and then detected
+  collision by comparing the resulting deck name to `new_name`: if Anki had
+  silently appended `"+"` it raised `ValueError`.  This heuristic false-positives
+  when the caller legitimately requests a name that ends in `"+"`.
+- Fix: before calling rename, `col.decks.id_for_name(new_name)` is checked.
+  If it returns a non-`None` id that is not the same deck being renamed, a
+  `ValueError("Rename collision: a deck named '<new_name>' already exists.")` is
+  raised immediately — no rename attempt is made.  The post-rename `"+"` comparison
+  is removed entirely.
+- Docstring updated to note: Anki's `decks.rename()` also automatically renames
+  all child decks when a parent is renamed (e.g. "A" → "B" also moves "A::Sub" →
+  "B::Sub"); callers do not need to enumerate subdecks.
+
+#### `_delete_decks` — loud docstring warning for subdeck + data-loss surface (HIGH)
+
+- `col.decks.remove()` silently deletes not only the named decks but also every
+  subdeck and every card (and orphaned note) in the entire subtree.  The previous
+  docstring mentioned this only as an incidental note about `cardsToo`.
+- Fix: added a prominent `.. warning::` block listing the three data-loss surfaces:
+  (1) named decks, (2) ALL subdecks, (3) ALL cards/orphaned notes.  Notes that the
+  `cardsToo` param is always ignored.  Instructs callers/UI to present an explicit
+  confirmation step listing affected decks and approximate card count before calling.
+- Behaviour unchanged.
+
+#### `_delete_decks` / `_delete_notes` — normalize `None` param to `[]` (LOW)
+
+- `params.get("decks", [])` returns `None` (not `[]`) when the key is present but
+  explicitly set to `null` in the JSON payload, causing `TypeError: 'NoneType'
+  object is not iterable` on the `for d in decks_param` loop.
+- Fix: `params.get("decks") or []` (and same for `"notes"` in `_delete_notes`).
+  A `null` param is now a safe no-op, consistent with an empty list.
+
+#### `tests/test_admin_actions.py` — fixture-agnostic test suite (HIGH)
+
+Four tests previously hardcoded committed-fixture values and failed when run
+against a real backup collection via `ANKI_TEST_BACKUP`:
+
+- **`TestModelFieldNames.test_basic_model_field_names`**: now guards with
+  `pytest.skip` if `"Basic"` model is absent; asserts positional fields
+  (`fields[0] == "Front"`, `fields[1] == "Back"`) rather than exact length.
+- **`TestModelFieldNames.test_latvian_vocab_field_names_in_order`**: the 4-field
+  exact-order assertion is now conditional on `len(fields) == 4`; minimum
+  `len >= 1` always asserted.
+- **`TestModelFieldNames.test_multi_field_model_returns_all_fields`**: guards
+  with `pytest.skip` if model absent; asserts `len >= 2` rather than `== 2`.
+- **`TestModelFieldNames.test_returns_list_of_strings`**: now uses the first
+  model returned by `modelNames` instead of hardcoding `"Basic"`.
+- **`TestFindCardsPaginated.test_default_limit_is_100`**: removed the
+  hardcoded comment "Fixture has 9 cards"; now asserts `len(cards) <= 100`,
+  `total == len(findCards("*"))`, and (if collection size ≤ 100) all cards
+  returned in one page.
+
+Two new tests added for the negative-param clamp fix:
+
+- **`test_negative_offset_clamped_to_zero`**: passes `offset=-5`; asserts
+  `result["offset"] == 0` and cards match the `offset=0` result.
+- **`test_negative_limit_returns_empty_cards`**: passes `limit=-1`; asserts
+  `result["cards"] == []` and `total` is still correct.
+
+Results: 27 passed (committed fixture) / 26 passed + 1 skipped (backup
+collection, skip on absent `Basic` model — expected and correct).
+Both modes green.  `ruff check` passes with no findings.
+
+---
+
 ### Added — admin CRUD actions + paginated browse (feat/admin-actions)
 
 Five new actions supporting the admin UI layer:

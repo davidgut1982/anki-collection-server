@@ -606,7 +606,7 @@ def _delete_notes(params: dict) -> None:
     Wrap in lock: this is a write operation.
     """
     col = _col()
-    note_ids: list[int] = params.get("notes", [])
+    note_ids: list[int] = params.get("notes") or []
     if not note_ids:
         return None
     from anki.notes import NoteId  # noqa: PLC0415
@@ -622,17 +622,33 @@ def _delete_decks(params: dict) -> None:
     Input: ``{"decks": [int|str], "cardsToo": bool}``
     Output: null
 
+    .. warning::
+        **DATA LOSS — permanent, unrecoverable.**
+
+        ``col.decks.remove()`` deletes:
+
+        1. Every named deck.
+        2. **ALL SUBDECKS** of each named deck (the entire subtree).
+        3. **ALL CARDS** (and their notes, if those notes have no remaining
+           cards) that live in any of the above decks.
+
+        There is no "keep cards" or "keep subdecks" variant in the
+        ``anki`` pip API (Anki 25.9.2).  The ``cardsToo`` parameter is
+        accepted for AnkiConnect wire-compatibility but is ignored — cards
+        are ALWAYS deleted.
+
+        Callers / UI layers MUST present an explicit confirmation step
+        (listing affected decks and an approximate card count) before
+        invoking this action.
+
     - String entries are resolved via ``col.decks.id_for_name()``.
     - Integer 1 (the built-in Default deck) is silently skipped — Anki does
       not allow the Default deck to be removed.
-    - ``cardsToo`` is accepted for API compatibility but has no effect:
-      ``col.decks.remove()`` always deletes the deck AND all its cards
-      regardless of the flag (this is Anki 25.9.2 behaviour; there is no
-      "keep cards" variant in the pip API).
+    - Non-existent deck names are silently skipped (idempotent).
     - Wrap in lock: this is a write operation.
     """
     col = _col()
-    decks_param: list[int | str] = params.get("decks", [])
+    decks_param: list[int | str] = params.get("decks") or []
     # cardsToo accepted but not used — remove() always deletes cards
     _ = params.get("cardsToo", True)
 
@@ -673,10 +689,18 @@ def _rename_deck(params: dict) -> None:
 
     - ``deck`` may be an integer id or a string name.
     - Raises ``ValueError`` if the deck is not found.
-    - ``col.decks.rename()`` in anki 25.9.2 does NOT raise on a sibling
-      name collision — instead it appends a ``"+"`` suffix to the new name.
-      We detect this after the rename and raise ``ValueError`` with a clear
-      message so callers can surface the collision to the user.
+    - Raises ``ValueError`` before calling rename if ``newName`` is already
+      in use by a different deck.  This avoids relying on the brittle
+      post-rename ``"+"``-suffix detection: anki 25.9.2's ``decks.rename()``
+      silently appends ``"+"`` on collision, but that heuristic false-positives
+      when the caller *legitimately* requests a name that ends in ``"+"``.
+      A pre-check against ``col.decks.id_for_name(new_name)`` is authoritative
+      and races only in the window between the check and the rename (acceptable
+      for a single-writer collection).
+    - Anki's ``decks.rename()`` automatically moves all child decks when a
+      parent is renamed (e.g. renaming "A" to "B" also renames "A::Sub" to
+      "B::Sub").  This behaviour is preserved here — callers do not need to
+      enumerate subdecks separately.
     - Wrap in lock: this is a write operation.
     """
     col = _col()
@@ -697,20 +721,18 @@ def _rename_deck(params: dict) -> None:
         if existing is None:
             raise ValueError(f"Deck not found: id={did_int}")
 
+    # Pre-check: if a deck already exists under new_name and it is NOT the
+    # deck being renamed, refuse — this is a collision.
+    existing_target_id = col.decks.id_for_name(new_name)
+    if existing_target_id is not None and int(existing_target_id) != did_int:
+        raise ValueError(
+            f"Rename collision: a deck named {new_name!r} already exists. "
+            f"Rename or remove it first."
+        )
+
     with col_mod._col_lock:
         col.decks.rename(DeckId(did_int), new_name)
 
-    # Detect silently-mangled name (collision appends "+")
-    deck_after = col.decks.get(DeckId(did_int))
-    if deck_after is None:
-        raise ValueError(f"Deck disappeared after rename — unexpected Anki behaviour")
-    actual_name: str = deck_after["name"]
-    if actual_name != new_name:
-        raise ValueError(
-            f"Rename collision: requested {new_name!r} but Anki stored "
-            f"{actual_name!r} — a deck with that name already exists. "
-            f"Rename or remove it first."
-        )
     return None
 
 
@@ -758,8 +780,8 @@ def _find_cards_paginated(params: dict) -> dict:
     """
     col = _col()
     query: str = params.get("query", "")
-    offset: int = int(params.get("offset", 0))
-    limit: int = min(int(params.get("limit", 100)), 500)
+    offset: int = max(0, int(params.get("offset", 0)))
+    limit: int = max(0, min(int(params.get("limit", 100)), 500))
 
     all_ids = list(col.find_cards(query))
     page = all_ids[offset : offset + limit]
