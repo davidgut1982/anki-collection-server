@@ -1011,10 +1011,10 @@ def _reposition_new_cards(params: dict) -> None:
     """
     col = _col()
     card_ids: list[int] = params.get("cards", [])
-    start: int = int(params.get("start", 0))
+    start: int = int(params.get("start", 1))
     step: int = int(params.get("step", 1))
     randomize: bool = bool(params.get("randomize", False))
-    shift_existing: bool = bool(params.get("shiftExisting", True))
+    shift_existing: bool = bool(params.get("shiftExisting", False))
     with col_mod._col_lock:
         col.sched.reposition_new_cards(
             card_ids,

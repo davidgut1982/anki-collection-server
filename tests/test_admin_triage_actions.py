@@ -336,6 +336,57 @@ class TestRepositionNewCards:
         for due in dues:
             assert due >= 1000, f"Expected due >= 1000 after reposition, got {due}"
 
+    def test_reposition_no_shift_default_leaves_bystanders_unchanged(
+        self, destructive_col: None
+    ) -> None:
+        """Omitting shiftExisting must default to False — bystander new cards NOT renumbered.
+
+        Regression test for: params.get("shiftExisting", True) silently mass-renumbering
+        every new card in the collection when the caller did not supply shiftExisting.
+
+        Setup:
+          - bystander card at a known low due position (reposition to 5)
+          - target card repositioned to 9000 WITHOUT passing shiftExisting
+        Assertion:
+          - bystander's due position is unchanged (still 5), proving shift_existing=False.
+        """
+        bystander_note = _add_basic_note("bystander-noshift-front-xzq", "bystander-noshift-back-xzq")
+        target_note = _add_basic_note("target-noshift-front-xzq", "target-noshift-back-xzq")
+
+        bystander_cards = _cards_for_note(bystander_note)
+        target_cards = _cards_for_note(target_note)
+        assert bystander_cards and target_cards
+
+        # Pin the bystander at position 5 (explicit, so we know its due)
+        invoke(
+            "repositionNewCards",
+            cards=bystander_cards,
+            start=5,
+            step=1,
+            randomize=False,
+            shiftExisting=False,
+        )
+        bystander_due_before = invoke("cardsInfo", cards=bystander_cards)[0]["due"]
+        assert bystander_due_before == 5, (
+            f"Precondition: bystander due must be 5, got {bystander_due_before}"
+        )
+
+        # Reposition target WITHOUT supplying shiftExisting — must default to False
+        invoke(
+            "repositionNewCards",
+            cards=target_cards,
+            start=9000,
+            step=1,
+            randomize=False,
+            # shiftExisting intentionally omitted — tests the default
+        )
+
+        bystander_due_after = invoke("cardsInfo", cards=bystander_cards)[0]["due"]
+        assert bystander_due_after == bystander_due_before, (
+            f"Bystander due changed from {bystander_due_before} to {bystander_due_after}. "
+            "shiftExisting default must be False, not True."
+        )
+
     def test_reposition_alias_works(self, destructive_col: None) -> None:
         """'reposition' alias must be registered and behave identically."""
         assert "reposition" in ACTIONS

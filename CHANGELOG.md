@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `_reposition_new_cards` defaults (Code Critic remediation)
+
+- **HIGH** `shiftExisting` default changed from `True` → `False`.  The previous
+  default silently mass-renumbered every new card in the collection whenever a
+  caller omitted the parameter.  `False` matches Anki's `reposition_defaults`
+  (shift=False) and AnkiConnect behaviour.
+- **LOW** `start` default changed from `0` → `1`.  Position 0 is not a valid
+  new-card due slot in Anki; `1` matches AnkiConnect/Anki convention.
+- Regression test added:
+  `TestRepositionNewCards::test_reposition_no_shift_default_leaves_bystanders_unchanged`
+  — verifies that omitting `shiftExisting` does **not** renumber bystander cards.
+
 ### Added — P0 card/note triage actions (feat/admin-actions)
 
 Nine new actions for the admin triage UI, implemented in `src/actions.py`
