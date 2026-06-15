@@ -264,6 +264,85 @@ class TestUpdateDeckConfig:
         result = invoke("updateDeckConfig", config=original["config"])
         assert result is None
 
+    # --- HIGH security guards (Code Critic) ----------------------------------
+
+    def test_unknown_preset_id_raises(self, destructive_col: None) -> None:
+        """updateDeckConfig with a non-existent preset id must raise ValueError.
+
+        No new preset must be created as a side-effect.
+        """
+        before_count = len(list(invoke("getDeckConfigs")))
+
+        with pytest.raises(ValueError, match="no preset with id=99999"):
+            invoke(
+                "updateDeckConfig",
+                config={
+                    "id": 99999,
+                    "name": "Ghost",
+                    "new": {"perDay": 20},
+                    "rev": {},
+                    "lapse": {},
+                },
+            )
+
+        # Collection must not have grown — no ghost preset created.
+        after_count = len(list(invoke("getDeckConfigs")))
+        assert after_count == before_count, (
+            f"Preset count changed from {before_count} to {after_count} — "
+            "ghost preset was created despite rejection."
+        )
+
+    def test_bad_type_new_per_day_raises(self, destructive_col: None) -> None:
+        """updateDeckConfig with new.perDay as a string must raise ValueError.
+
+        The real preset's perDay value must remain unchanged after the rejection.
+        """
+        original = invoke("getDeckConfig", deck="Default")
+        cfg = dict(original["config"])
+        original_per_day: int = original["new_per_day"]
+
+        # Inject wrong type
+        cfg["new"] = dict(cfg["new"])
+        cfg["new"]["perDay"] = "bad"
+
+        with pytest.raises(ValueError, match="new.perDay"):
+            invoke("updateDeckConfig", config=cfg)
+
+        # Verify the real preset's perDay is unchanged.
+        after = invoke("getDeckConfig", deck="Default")
+        assert after["new_per_day"] == original_per_day, (
+            f"new.perDay changed from {original_per_day} to {after['new_per_day']} "
+            "despite rejection of the bad-type update."
+        )
+
+    def test_non_int_id_raises(self, destructive_col: None) -> None:
+        """updateDeckConfig with a string 'id' must raise ValueError."""
+        with pytest.raises(ValueError, match="'id' must be an int"):
+            invoke("updateDeckConfig", config={"id": "not-an-int", "new": {}})
+
+    def test_valid_update_still_works_after_guards(self, destructive_col: None) -> None:
+        """A fully valid updateDeckConfig call must succeed after guard logic is in place.
+
+        This is a regression guard: the new validation must not break the
+        happy path.
+        """
+        original = invoke("getDeckConfig", deck="Default")
+        cfg = dict(original["config"])
+
+        original_per_day: int = original["new_per_day"]
+        new_value = 42 if original_per_day != 42 else 43
+
+        cfg["new"] = dict(cfg["new"])
+        cfg["new"]["perDay"] = new_value
+
+        result = invoke("updateDeckConfig", config=cfg)
+        assert result is None
+
+        after = invoke("getDeckConfig", deck="Default")
+        assert after["new_per_day"] == new_value, (
+            f"Expected new_per_day={new_value} after valid update, got {after['new_per_day']}"
+        )
+
 
 # ===========================================================================
 # getFsrsParams

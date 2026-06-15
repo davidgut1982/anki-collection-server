@@ -1291,24 +1291,106 @@ def _update_deck_config(params: dict) -> None:
 
     The caller must supply the full config dict (including ``"id"`` and all
     fields), typically obtained from ``getDeckConfig`` or ``getDeckConfigs``
-    and then modified.  The ``"id"`` field is required — if missing a
-    ``ValueError`` is raised.
+    and then modified.  The ``"id"`` field is required — if missing or
+    non-integer a ``ValueError`` is raised.  The id must match an existing
+    preset; unknown ids are rejected to prevent ghost-preset creation.
+
+    When scheduling sub-dict keys are present they are validated for type
+    before the write:
+
+    * ``new.perDay``, ``rev.perDay``, ``rev.maxIvl``, ``lapse.leechFails``,
+      ``lapse.leechAction``, ``lapse.minInt`` → int
+    * ``lapse.mult``, ``rev.ivlFct``, ``rev.ease4``, ``rev.hardFactor``
+      → float (bare int is coerced)
+    * ``new.delays``, ``lapse.delays`` → list
+
+    Only keys that are present in the submitted dict are validated; absent
+    keys are left untouched (Anki merges sparse updates).
 
     Wrap in lock: this is a write operation.
 
     Raises
     ------
     ValueError
-        If the ``"id"`` field is absent from the config dict.
+        If the ``"id"`` field is absent, non-integer, or does not match any
+        existing preset; or if a scheduling field has the wrong type.
     """
     cfg: dict = params.get("config", {})
+
+    # --- id presence and type ------------------------------------------------
     if "id" not in cfg:
         raise ValueError(
             "updateDeckConfig: config dict must contain an 'id' field. "
             "Obtain the config via getDeckConfig or getDeckConfigs, modify it, "
             "and pass the full dict back."
         )
+    if not isinstance(cfg["id"], int):
+        raise ValueError(
+            f"updateDeckConfig: 'id' must be an int, got {type(cfg['id']).__name__!r}."
+        )
+
     col = _col()
+
+    # --- reject unknown preset id (prevents ghost-preset creation) -----------
+    if not any(c["id"] == cfg["id"] for c in col.decks.all_config()):
+        raise ValueError(
+            f"updateDeckConfig: no preset with id={cfg['id']} — "
+            "use getDeckConfigs for valid ids."
+        )
+
+    # --- scheduling field type validation ------------------------------------
+    _INT_FIELDS: list[tuple[str, str]] = [
+        ("new", "perDay"),
+        ("rev", "perDay"),
+        ("rev", "maxIvl"),
+        ("lapse", "leechFails"),
+        ("lapse", "leechAction"),
+        ("lapse", "minInt"),
+    ]
+    _FLOAT_FIELDS: list[tuple[str, str]] = [
+        ("lapse", "mult"),
+        ("rev", "ivlFct"),
+        ("rev", "ease4"),
+        ("rev", "hardFactor"),
+    ]
+    _LIST_FIELDS: list[tuple[str, str]] = [
+        ("new", "delays"),
+        ("lapse", "delays"),
+    ]
+
+    for sub, key in _INT_FIELDS:
+        sub_dict = cfg.get(sub)
+        if isinstance(sub_dict, dict) and key in sub_dict:
+            if not isinstance(sub_dict[key], int):
+                raise ValueError(
+                    f"updateDeckConfig: {sub}.{key} must be int, "
+                    f"got {type(sub_dict[key]).__name__!r}."
+                )
+
+    for sub, key in _FLOAT_FIELDS:
+        sub_dict = cfg.get(sub)
+        if isinstance(sub_dict, dict) and key in sub_dict:
+            val = sub_dict[key]
+            if isinstance(val, int):
+                # Coerce bare int to float; mutate in the cfg copy the caller
+                # already holds so Anki sees a float.
+                cfg[sub] = dict(cfg[sub])
+                cfg[sub][key] = float(val)
+            elif not isinstance(val, float):
+                raise ValueError(
+                    f"updateDeckConfig: {sub}.{key} must be float, "
+                    f"got {type(val).__name__!r}."
+                )
+
+    for sub, key in _LIST_FIELDS:
+        sub_dict = cfg.get(sub)
+        if isinstance(sub_dict, dict) and key in sub_dict:
+            if not isinstance(sub_dict[key], list):
+                raise ValueError(
+                    f"updateDeckConfig: {sub}.{key} must be list, "
+                    f"got {type(sub_dict[key]).__name__!r}."
+                )
+
     with col_mod._col_lock:
         col.decks.update_config(cfg, preserve_usn=False)
     return None
@@ -1434,6 +1516,10 @@ def _compute_optimal_retention(params: dict) -> dict:
 
     col = _col()
     deck_param = params.get("deck", "Default")
+    # _resolve_deck_id raises ValueError for unknown deck names/ids.  That
+    # exception is intentionally *not* caught here — it propagates out of this
+    # function and the server envelope converts it to a clean error response.
+    # Do not broaden the try/except below to swallow it.
     did = _resolve_deck_id(deck_param)
 
     from anki.decks import DeckId  # noqa: PLC0415

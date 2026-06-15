@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security — updateDeckConfig input validation (feat/admin-actions, Code Critic HIGH)
+
+- **Reject unknown preset id**: `updateDeckConfig` now verifies that `cfg["id"]`
+  matches an existing preset via `col.decks.all_config()` before writing.
+  Unknown ids raise `ValueError("no preset with id=... — use getDeckConfigs for
+  valid ids")`.  This prevents ghost-preset creation in Anki's deck config store.
+- **Reject missing or non-integer id**: A missing `"id"` key or a non-int value
+  now raises `ValueError` with a distinct message before the preset lookup.
+- **Scheduling field type validation**: If any of the following keys are present
+  in the submitted config dict, they are now type-checked before the write:
+  - `new.perDay`, `rev.perDay`, `rev.maxIvl`, `lapse.leechFails`,
+    `lapse.leechAction`, `lapse.minInt` → must be `int`
+  - `lapse.mult`, `rev.ivlFct`, `rev.ease4`, `rev.hardFactor` → must be `float`
+    (bare `int` is coerced silently)
+  - `new.delays`, `lapse.delays` → must be `list`
+  Absent keys are not validated (sparse updates remain supported).
+
+### Fixed — _compute_optimal_retention exception propagation clarity
+
+- Added inline comment in `_compute_optimal_retention` explaining that the
+  `ValueError` from `_resolve_deck_id` is intentionally propagated (not caught)
+  so unknown deck names surface as clean envelope errors.  This prevents a
+  future edit from accidentally broadening the `try/except` to swallow it.
+
+### Tests — test_admin_scheduling_actions.py (Code Critic guards)
+
+- `test_unknown_preset_id_raises`: verifies `id=99999` raises `ValueError` and
+  that `all_config()` length is unchanged (no ghost preset created).
+- `test_bad_type_new_per_day_raises`: verifies `new.perDay="bad"` raises
+  `ValueError` matching `"new.perDay"` and that the real preset's `perDay` is
+  unchanged.
+- `test_non_int_id_raises`: verifies a string `"id"` raises `ValueError`.
+- `test_valid_update_still_works_after_guards`: regression guard confirming the
+  happy-path round-trip still succeeds after the new guard logic.
+
 ### Added — P0 scheduling control actions (feat/admin-actions, A3)
 
 Six new actions for the admin scheduling UI, implemented in `src/actions.py`
