@@ -668,7 +668,9 @@ def _delete_decks(params: dict) -> None:
 
         if did_int == 1:
             # Default deck (id=1) cannot be deleted; Anki forbids it.
-            log.warning("deleteDecks: refusing to delete Default deck (id=1) — skipping")
+            log.warning(
+                "deleteDecks: refusing to delete Default deck (id=1) — skipping"
+            )
             continue
 
         deck_ids.append(DeckId(did_int))
@@ -959,7 +961,9 @@ def _set_due_date(params: dict) -> None:
     card_ids: list[int] = params.get("cards", [])
     days: str = params.get("days", "")
     if not isinstance(days, str) or not days.strip():
-        raise ValueError("setDueDate: 'days' must be a non-empty string (e.g. '1', '3-7')")
+        raise ValueError(
+            "setDueDate: 'days' must be a non-empty string (e.g. '1', '3-7')"
+        )
     with col_mod._col_lock:
         col.sched.set_due_date(card_ids, days)
     return None
@@ -1132,6 +1136,351 @@ def _get_tags(params: dict) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Scheduling control — deck config read/write + FSRS helpers  (P0 admin A3)
+# ---------------------------------------------------------------------------
+
+#
+# Confirmed deck-config key structure (anki 25.9.2, empirically inspected):
+#
+# Top-level:
+#   id, name, mod, usn, dyn
+#   new: {bury, delays, initialFactor, ints, order, perDay}
+#   rev: {bury, ease4, hardFactor, ivlFct, maxIvl, perDay}
+#   lapse: {delays, leechAction, leechFails, minInt, mult}
+#   desiredRetention (float)   — FSRS target retention
+#   fsrsParams5 (list[float])  — FSRS-5 weight vector (first 17 params)
+#   fsrsParams6 (list[float])  — FSRS-6 weight vector (21 params, preferred)
+#   fsrsWeights (list[float])  — legacy alias; same as fsrsParams6 when set
+#   sm2Retention (float)       — SM-2 retention target
+#   buryInterdayLearning, interdayLearningMix, maxTaken, newGatherPriority,
+#   newMix, newPerDayMinimum, newSortOrder, reviewOrder, autoplay, replayq,
+#   timer, weightSearch, ignoreRevlogsBeforeDate, easyDaysPercentages,
+#   answerAction, questionAction, secondsToShowAnswer, secondsToShowQuestion,
+#   stopTimerOnAnswer, waitForAudio
+#
+# NOTE: there is NO "desired_retention" (snake_case) key.  The camelCase
+# "desiredRetention" is the real key.  Similarly "fsrsParams6" not "fsrs_params_6".
+
+
+def _resolve_deck_id(deck: int | str) -> int:
+    """Resolve a deck name or id to an integer deck id.
+
+    Parameters
+    ----------
+    deck:
+        Either an integer deck id or a string deck name.
+
+    Returns
+    -------
+    int
+        The resolved deck id.
+
+    Raises
+    ------
+    ValueError
+        If the deck name is not found.
+    """
+    col = _col()
+    if isinstance(deck, str):
+        did = col.decks.id_for_name(deck)
+        if did is None:
+            raise ValueError(f"Deck not found: {deck!r}")
+        return int(did)
+    return int(deck)
+
+
+def _get_deck_config(params: dict) -> dict:
+    """Return the resolved deck configuration preset for a deck.
+
+    Input:  ``{"deck": int|str}``
+    Output: human-relevant fields + full raw config under ``"config"``
+
+    Resolved field names (empirically confirmed against anki 25.9.2):
+      - new_per_day          ← cfg["new"]["perDay"]
+      - rev_per_day          ← cfg["rev"]["perDay"]
+      - learning_steps       ← cfg["new"]["delays"]
+      - relearn_steps        ← cfg["lapse"]["delays"]
+      - graduating_interval  ← cfg["new"]["ints"][1]  (good interval, days)
+      - easy_interval        ← cfg["new"]["ints"][0]  (immediate easy exit, days)
+      - max_interval         ← cfg["rev"]["maxIvl"]
+      - bury_new             ← cfg["new"]["bury"]
+      - bury_reviews         ← cfg["rev"]["bury"]
+      - leech_fails          ← cfg["lapse"]["leechFails"]
+      - leech_action         ← cfg["lapse"]["leechAction"]
+      - new_interval_mult    ← cfg["lapse"]["mult"]   (interval mult after lapse)
+      - min_interval         ← cfg["lapse"]["minInt"]  (min interval after lapse, days)
+      - initial_factor       ← cfg["new"]["initialFactor"]  (SM-2 ease factor * 10)
+      - desired_retention    ← cfg["desiredRetention"]
+      - fsrs_params          ← cfg["fsrsParams6"] (falls back to fsrsParams5 if empty)
+
+    Also returns the preset ``id`` and ``name``, plus the full raw dict under
+    the ``"config"`` key for callers that need less-common fields.
+
+    Read-only — no lock needed.
+    """
+    col = _col()
+    deck_param = params.get("deck", "Default")
+    did = _resolve_deck_id(deck_param)
+
+    from anki.decks import DeckId  # noqa: PLC0415
+
+    cfg = col.decks.config_dict_for_deck_id(DeckId(did))
+
+    new = cfg.get("new", {})
+    rev = cfg.get("rev", {})
+    lapse = cfg.get("lapse", {})
+
+    # ints: [immediate_easy_days, graduating_days, 0_unused] in the fixture
+    ints = new.get("ints", [1, 4, 0])
+    easy_interval = ints[0] if len(ints) > 0 else 1
+    graduating_interval = ints[1] if len(ints) > 1 else 4
+
+    # FSRS params: prefer fsrsParams6 (21 params), fall back to fsrsParams5 (17 params)
+    fsrs_params = cfg.get("fsrsParams6") or cfg.get("fsrsParams5") or []
+
+    return {
+        "id": cfg.get("id"),
+        "name": cfg.get("name"),
+        # New card options
+        "new_per_day": new.get("perDay"),
+        "learning_steps": new.get("delays"),
+        "graduating_interval": graduating_interval,
+        "easy_interval": easy_interval,
+        "initial_factor": new.get("initialFactor"),
+        # Review options
+        "rev_per_day": rev.get("perDay"),
+        "max_interval": rev.get("maxIvl"),
+        # Bury flags
+        "bury_new": new.get("bury"),
+        "bury_reviews": rev.get("bury"),
+        # Lapse options
+        "relearn_steps": lapse.get("delays"),
+        "leech_fails": lapse.get("leechFails"),
+        "leech_action": lapse.get("leechAction"),
+        "new_interval_mult": lapse.get("mult"),
+        "min_interval": lapse.get("minInt"),
+        # FSRS
+        "desired_retention": cfg.get("desiredRetention"),
+        "fsrs_params": fsrs_params,
+        # Full raw dict for callers needing extended fields
+        "config": dict(cfg),
+    }
+
+
+def _get_deck_configs(params: dict) -> list[dict]:  # noqa: ARG001
+    """Return all deck configuration presets (for a preset-selector UI).
+
+    Input:  ``{}``
+    Output: list of raw DeckConfigDict dicts
+
+    Each entry has the full key set documented above.  Callers can use this
+    to populate a preset selector and then pass a modified dict to
+    ``updateDeckConfig``.
+
+    Read-only — no lock needed.
+    """
+    col = _col()
+    return list(col.decks.all_config())
+
+
+def _update_deck_config(params: dict) -> None:
+    """Update (save) a deck configuration preset.
+
+    Input:  ``{"config": <full DeckConfigDict>}``
+    Output: null
+
+    The caller must supply the full config dict (including ``"id"`` and all
+    fields), typically obtained from ``getDeckConfig`` or ``getDeckConfigs``
+    and then modified.  The ``"id"`` field is required — if missing a
+    ``ValueError`` is raised.
+
+    Wrap in lock: this is a write operation.
+
+    Raises
+    ------
+    ValueError
+        If the ``"id"`` field is absent from the config dict.
+    """
+    cfg: dict = params.get("config", {})
+    if "id" not in cfg:
+        raise ValueError(
+            "updateDeckConfig: config dict must contain an 'id' field. "
+            "Obtain the config via getDeckConfig or getDeckConfigs, modify it, "
+            "and pass the full dict back."
+        )
+    col = _col()
+    with col_mod._col_lock:
+        col.decks.update_config(cfg, preserve_usn=False)
+    return None
+
+
+def _get_fsrs_params(params: dict) -> dict:
+    """Return the FSRS parameters and desired retention for a deck.
+
+    Input:  ``{"deck": int|str}``
+    Output: ``{"params": list[float], "desiredRetention": float}``
+
+    ``params`` is the FSRS weight vector (21 floats for FSRS-6, or 17 for
+    FSRS-5 if FSRS-6 weights are absent).  An empty list means no weights
+    have been set yet (Anki will use built-in defaults).
+
+    ``desiredRetention`` is the target retention probability (0.0–1.0).
+
+    Read-only — no lock needed.
+    """
+    col = _col()
+    deck_param = params.get("deck", "Default")
+    did = _resolve_deck_id(deck_param)
+
+    from anki.decks import DeckId  # noqa: PLC0415
+
+    cfg = col.decks.config_dict_for_deck_id(DeckId(did))
+
+    # Prefer FSRS-6 (21 params); fall back to FSRS-5 (17 params)
+    fsrs_params = cfg.get("fsrsParams6") or cfg.get("fsrsParams5") or []
+    desired_retention: float = float(cfg.get("desiredRetention", 0.9))
+
+    return {
+        "params": list(fsrs_params),
+        "desiredRetention": desired_retention,
+    }
+
+
+# Allowed retention range — same bounds enforced by Anki's desktop UI
+_RETENTION_MIN = 0.70
+_RETENTION_MAX = 0.97
+
+
+def _set_desired_retention(params: dict) -> None:
+    """Set the desired retention for a deck's configuration preset.
+
+    Input:  ``{"deck": int|str, "retention": float}``
+    Output: null
+
+    ``retention`` must be in [0.70, 0.97].  Values outside this range raise
+    ``ValueError`` — Anki's own UI enforces the same bounds.
+
+    Wrap in lock: this is a write operation.
+
+    Raises
+    ------
+    ValueError
+        If ``retention`` is outside [0.70, 0.97].
+    """
+    col = _col()
+    deck_param = params.get("deck", "Default")
+    retention: float = float(params.get("retention", 0.9))
+
+    if retention < _RETENTION_MIN or retention > _RETENTION_MAX:
+        raise ValueError(
+            f"setDesiredRetention: retention {retention!r} is out of range "
+            f"[{_RETENTION_MIN}, {_RETENTION_MAX}]. "
+            "Anki's scheduler requires this bound."
+        )
+
+    did = _resolve_deck_id(deck_param)
+
+    from anki.decks import DeckId  # noqa: PLC0415
+
+    cfg = col.decks.config_dict_for_deck_id(DeckId(did))
+    cfg["desiredRetention"] = retention
+
+    with col_mod._col_lock:
+        col.decks.update_config(cfg, preserve_usn=False)
+
+    return None
+
+
+def _compute_optimal_retention(params: dict) -> dict:
+    """Compute the optimal retention for a deck using the FSRS simulator.
+
+    Input:  ``{"deck": int|str, optional simulation params}``
+    Output: ``{"optimalRetention": float}`` on success,
+            ``{"error": str, "note": str}`` on failure.
+
+    Optional simulation parameters (all have reasonable defaults):
+      - ``daysToSimulate`` (int, default 365)  — simulation horizon in days
+      - ``deckSize``       (int, default 0)    — 0 = infer from collection
+      - ``newLimit``       (int, default 0)    — 0 = use deck preset
+      - ``reviewLimit``    (int, default 0)    — 0 = use deck preset
+      - ``maxInterval``    (int, default 0)    — 0 = use deck preset
+      - ``search``         (str, default "")   — card filter (empty = whole deck)
+
+    Uses ``col._backend.compute_optimal_retention(SimulateFsrsReviewRequest)``
+    which is an internal backend API (not part of the public Collection API).
+    If the import or backend call fails, returns ``{"error": ..., "note": ...}``
+    instead of raising — this prevents a 500-style error when the internal API
+    changes between anki versions.
+
+    The FSRS params stored in the deck's config preset are used automatically;
+    the backend reads them from the collection config.
+
+    Confirmed signature (anki 25.9.2 backend):
+        compute_optimal_retention(SimulateFsrsReviewRequest) -> float
+    SimulateFsrsReviewRequest fields (anki.scheduler_pb2):
+        params, desired_retention, deck_size, days_to_simulate,
+        new_limit, review_limit, max_interval, search,
+        new_cards_ignore_review_limit, easy_days_percentages,
+        review_order, suspend_after_lapse_count, historical_retention,
+        learning_step_count, relearning_step_count
+    """
+    try:
+        from anki.scheduler_pb2 import SimulateFsrsReviewRequest  # noqa: PLC0415
+    except ImportError as exc:
+        return {
+            "error": f"SimulateFsrsReviewRequest not available: {exc}",
+            "note": "internal API — may break on anki upgrade",
+        }
+
+    col = _col()
+    deck_param = params.get("deck", "Default")
+    did = _resolve_deck_id(deck_param)
+
+    from anki.decks import DeckId  # noqa: PLC0415
+
+    cfg = col.decks.config_dict_for_deck_id(DeckId(did))
+    fsrs_params = cfg.get("fsrsParams6") or cfg.get("fsrsParams5") or []
+    desired_retention = float(cfg.get("desiredRetention", 0.9))
+
+    days_to_simulate: int = int(params.get("daysToSimulate", 365))
+    deck_size: int = int(params.get("deckSize", 0))
+    new_limit: int = int(params.get("newLimit", 0))
+    review_limit: int = int(params.get("reviewLimit", 0))
+    max_interval: int = int(params.get("maxInterval", 0))
+    search: str = str(params.get("search", ""))
+
+    request = SimulateFsrsReviewRequest(
+        params=list(fsrs_params),
+        desired_retention=desired_retention,
+        deck_size=deck_size,
+        days_to_simulate=days_to_simulate,
+        new_limit=new_limit,
+        review_limit=review_limit,
+        max_interval=max_interval,
+        search=search,
+    )
+
+    try:
+        result: float = col._backend.compute_optimal_retention(request)
+        return {"optimalRetention": float(result)}
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "computeOptimalRetention backend call failed: %s — "
+            "collection may have too few review items or FSRS is not configured",
+            exc,
+        )
+        return {
+            "error": str(exc),
+            "note": (
+                "compute_optimal_retention is an internal backend API. "
+                "It requires FSRS to be enabled with a trained weight vector "
+                "and a minimum number of review items in the collection. "
+                "The API may also break on anki version upgrades."
+            ),
+        }
+
+
+# ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
 
@@ -1194,4 +1543,11 @@ ACTIONS: dict[str, Any] = {
     "getNumCardsReviewedByDay": _get_num_cards_reviewed_by_day,
     "getReviewsOfCards": _get_reviews_of_cards,
     "getCollectionStatsHTML": _get_collection_stats_html,
+    # Scheduling control — deck config + FSRS (P0 admin A3)
+    "getDeckConfig": _get_deck_config,
+    "getDeckConfigs": _get_deck_configs,
+    "updateDeckConfig": _update_deck_config,
+    "getFsrsParams": _get_fsrs_params,
+    "setDesiredRetention": _set_desired_retention,
+    "computeOptimalRetention": _compute_optimal_retention,
 }

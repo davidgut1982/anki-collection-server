@@ -154,6 +154,7 @@ implemented in subsequent steps.
 | Decks | `createDeck`, `deckNames`, `getDeckStats` |
 | Decks (admin) | `deleteDecks`, `renameDeck` |
 | Scheduler | `suspend`, `unsuspend`, `bury`, `unbury`, `setDueDate`, `forgetCards`, `repositionNewCards`, `reposition` |
+| Scheduling config | `getDeckConfig`, `getDeckConfigs`, `updateDeckConfig`, `getFsrsParams`, `setDesiredRetention`, `computeOptimalRetention` |
 | Models | `modelNames`, `createModel`, `modelTemplates` |
 | Models (admin) | `modelFieldNames` |
 | Card mutation | `setSpecificValueOfCard` |

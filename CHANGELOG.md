@@ -7,6 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — P0 scheduling control actions (feat/admin-actions, A3)
+
+Six new actions for the admin scheduling UI, implemented in `src/actions.py`
+and registered in `ACTIONS`.  All mutations run under `col_mod._col_lock`.
+Errors raise `ValueError` → server converts to `{"result":null,"error":"..."}` HTTP 200.
+
+#### Confirmed deck-config key structure (empirically inspected, anki 25.9.2)
+
+Real key names differ from snake_case guesses; use these:
+
+| Path | Actual key |
+|------|-----------|
+| Top-level retention | `desiredRetention` (float, NOT `desired_retention`) |
+| Top-level FSRS-6 params | `fsrsParams6` (list[float], NOT `fsrs_params_6`) |
+| Top-level FSRS-5 params | `fsrsParams5` (list[float]) |
+| `new` sub-dict | `perDay`, `delays`, `initialFactor`, `ints`, `order`, `bury` |
+| `rev` sub-dict | `perDay`, `maxIvl`, `ivlFct`, `ease4`, `hardFactor`, `bury` |
+| `lapse` sub-dict | `delays`, `leechFails`, `leechAction`, `minInt`, `mult` |
+
+API confirmed:
+- `col.decks.config_dict_for_deck_id(DeckId(did)) -> DeckConfigDict`
+- `col.decks.all_config() -> list[DeckConfigDict]`
+- `col.decks.update_config(cfg, preserve_usn=False) -> None`
+- `col._backend.compute_optimal_retention(SimulateFsrsReviewRequest) -> float`
+- `SimulateFsrsReviewRequest` lives in `anki.scheduler_pb2` (NOT `anki.backend_pb2`)
+
+#### Actions
+
+**`getDeckConfig`**
+- Params: `{"deck": int|str}`
+- Result: human-relevant fields + raw config under `"config"` key
+- Fields returned: `id`, `name`, `new_per_day`, `rev_per_day`, `learning_steps`,
+  `relearn_steps`, `graduating_interval`, `easy_interval`, `max_interval`,
+  `bury_new`, `bury_reviews`, `leech_fails`, `leech_action`, `new_interval_mult`,
+  `min_interval`, `initial_factor`, `desired_retention`, `fsrs_params`, `config`
+- `fsrs_params` prefers `fsrsParams6` (21 params), falls back to `fsrsParams5` (17)
+
+**`getDeckConfigs`**
+- Params: `{}`
+- Result: `list[DeckConfigDict]` — all presets (for preset-selector UI)
+
+**`updateDeckConfig`**
+- Params: `{"config": <full DeckConfigDict>}`
+- Result: null
+- Requires `"id"` field in the config dict; raises `ValueError` if absent.
+- Calls `col.decks.update_config(cfg, preserve_usn=False)` under `_col_lock`.
+
+**`getFsrsParams`**
+- Params: `{"deck": int|str}`
+- Result: `{"params": list[float], "desiredRetention": float}`
+- Prefers `fsrsParams6`; falls back to `fsrsParams5`; returns empty list if neither set.
+
+**`setDesiredRetention`**
+- Params: `{"deck": int|str, "retention": float}`
+- Result: null
+- Clamp: raises `ValueError` if `retention` is outside `[0.70, 0.97]`.
+- Reads config via `config_dict_for_deck_id`, sets `desiredRetention`, calls `update_config`.
+
+**`computeOptimalRetention`**
+- Params: `{"deck": int|str, optional simulation params}`
+- Result: `{"optimalRetention": float}` on success; `{"error": str, "note": str}` on failure.
+- Optional params: `daysToSimulate` (default 365), `deckSize`, `newLimit`, `reviewLimit`,
+  `maxInterval`, `search`.
+- Calls `col._backend.compute_optimal_retention(SimulateFsrsReviewRequest(...))`
+  (internal API, `anki.scheduler_pb2`).
+- **Never raises** — on import failure or backend error, returns `{"error": ..., "note": ...}`
+  with an informative message explaining the caveat.
+- Requires FSRS enabled + trained weights + sufficient revlog data to succeed.
+
+#### Tests — `tests/test_admin_scheduling_actions.py` (32 tests, all pass, 0.26 s)
+
+- **`TestGetDeckConfig`** (6): all 19 expected keys present; correct types; `config` key
+  has raw dict with nested sub-dicts; accepts int deck id; `desired_retention` in (0,1];
+  nonexistent deck raises `ValueError`.
+- **`TestGetDeckConfigs`** (4): returns list; non-empty; each entry is dict with id/name;
+  each entry has `new`, `rev`, `lapse` sub-dicts.
+- **`TestUpdateDeckConfig`** (4): round-trip `new_per_day`; round-trip `desiredRetention`;
+  missing `id` raises `ValueError`; returns `None`.
+- **`TestGetFsrsParams`** (4): returns `params` (list) + `desiredRetention` (float);
+  retention in (0,1]; params is list of floats or empty; nonexistent deck raises.
+- **`TestSetDesiredRetention`** (9): persists 0.85 (verified via `getFsrsParams`);
+  persists 0.92 (verified via `getDeckConfig`); rejects 0.5 (below min); rejects 0.99
+  (above max); rejects 0.0; rejects 1.0; accepts boundary 0.70; accepts boundary 0.97;
+  nonexistent deck raises.
+- **`TestComputeOptimalRetention`** (3): returns float in (0,1) OR error dict — never raises;
+  does not raise on thin fixture data; accepts optional simulation params.
+- **`TestActionRegistration`** (2): all 6 action keys in ACTIONS; all handlers callable.
+
+Total test count: 165 → 197 (all pass, 3 skipped — FSRS optimizer tests, expected).
+
 ### Fixed — `_reposition_new_cards` defaults (Code Critic remediation)
 
 - **HIGH** `shiftExisting` default changed from `True` → `False`.  The previous
