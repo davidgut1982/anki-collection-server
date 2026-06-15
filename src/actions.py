@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import src.collection as col_mod
+from src.stats import STATS_ACTIONS
 
 log = logging.getLogger(__name__)
 
@@ -1894,4 +1895,6 @@ ACTIONS: dict[str, Any] = {
     "mediaCheck": _media_check,
     "deleteUnusedMedia": _delete_unused_media,
     "mediaDirSize": _media_dir_size,
+    # Diagnostics & stats (P0 admin A5)
+    **STATS_ACTIONS,
 }

@@ -164,6 +164,7 @@ implemented in subsequent steps.
 | Media | `storeMediaFile`, `retrieveMediaFile`, `deleteMediaFile` |
 | Tags | `getTags`, `clearUnusedTags` |
 | Stats | `getNumCardsReviewedToday`, `getNumCardsReviewedByDay`, `getReviewsOfCards`, `getCollectionStatsHTML` |
+| Diagnostics | `statCardCounts`, `statTrueRetention`, `statIntervalDistribution`, `statEaseDistribution`, `statFutureDue`, `statReviewsByDay`, `statAddedByDay`, `statTimeSpent` |
 | Review GUI | `guiDeckReview`, `guiCurrentCard`, `guiStartCardTimer`, `guiShowAnswer`, `guiAnswerCard`, `guiUndo` |
 | Sync | `sync` |
 | FSRS | `enableFsrs`, `isFsrsEnabled` |

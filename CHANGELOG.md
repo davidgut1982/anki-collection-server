@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — P0 diagnostics & stats actions (feat/admin-actions A5)
+
+New module `src/stats.py` adds 8 read-only diagnostic action handlers registered
+under `STATS_ACTIONS` and merged into the global `ACTIONS` dispatch table.  All
+queries run under `col_mod._col_lock` for consistency.  All errors propagate as
+`ValueError` so the server envelope converts them to `{"result": null, "error": ...}`.
+
+**Actions added:**
+
+| Action | Params | Returns |
+|--------|--------|---------|
+| `statCardCounts` | (none) | `{new, learning, review, suspended, buried, total}` |
+| `statTrueRetention` | `{days=30}` | retention by young/mature/overall |
+| `statIntervalDistribution` | (none) | 7-bucket interval histogram (queue=2 cards) |
+| `statEaseDistribution` | (none) | SM-2 ease factor histogram + FSRS note |
+| `statFutureDue` | `{days=30}` | per-day due counts for next N days |
+| `statReviewsByDay` | `{days=365}` | daily review counts + time from revlog |
+| `statAddedByDay` | `{days=365}` | daily card-creation counts |
+| `statTimeSpent` | `{days=30}` | total + per-day + avg ms from revlog.time |
+
+**Due semantics confirmed (empirically):**
+`cards.due` for queue=2 (review) cards is an integer day number since `col.crt`.
+`col.sched.today` is the current day number.  `due - today` gives the offset
+from now in days (negative = overdue).  The `statFutureDue` query uses
+`due >= today AND due <= today + days` to capture only cards due today or in
+the future; overdue cards (due < today) are excluded.
+
+**FSRS difficulty caveat:**
+FSRS stores per-card difficulty in `card.data` (a JSON blob), not in
+`card.factor`.  `statEaseDistribution` reports `card.factor` buckets (which
+are mostly the default 2500 / 250% under FSRS) and includes a `fsrs_note`
+string explaining the limitation.  Per-card FSRS difficulty extraction would
+require parsing the JSON blob for every review card — expensive and fragile
+across Anki versions — so it is not implemented.
+
+**Tests:** `tests/test_admin_stats.py` — 50 tests, all passing.  Covers shape
+validation, math sanity (pass ≤ total, 0 ≤ retention ≤ 100), cross-action
+consistency (interval sum == review count; `statReviewsByDay` matches
+`getNumCardsReviewedByDay`), and fixture-specific known-value assertions.
+
 ### Fixed — Code Critic HIGH remediation: maintenance/backup (feat/admin-actions)
 
 **`src/maintenance.py` — WAL checkpoint abort on failure**
