@@ -566,7 +566,7 @@ class TestFindDuplicates:
         Uses the same add-then-rewrite strategy to produce a genuine duplicate.
         """
         shared = "shape-dupe-xzq"
-        note_a = _add_basic_note(shared, "shape-back-a")
+        _add_basic_note(shared, "shape-back-a")
         note_b = _add_basic_note("shape-dupe-TEMP-xzq", "shape-back-b")
         invoke(
             "findAndReplace",

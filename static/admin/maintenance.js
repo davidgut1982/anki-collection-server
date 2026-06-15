@@ -170,6 +170,13 @@
   }
 
   // -------------------------------------------------------------------------
+  // In-flight guards — prevent double-dispatch of destructive operations
+  // -------------------------------------------------------------------------
+
+  let _removeEmptyInFlight = false;
+  let _deleteUnusedInFlight = false;
+
+  // -------------------------------------------------------------------------
   // Button handlers — Database section
   // -------------------------------------------------------------------------
 
@@ -251,6 +258,8 @@
   });
 
   removeEmptyBtn.addEventListener('click', async () => {
+    if (_removeEmptyInFlight) return;
+    _removeEmptyInFlight = true;
     // Pre-fetch empty card count for confirm message
     startOp(removeEmptyBtn, removeEmptySpinner);
     dbResult.hidden = true;
@@ -261,10 +270,18 @@
     } catch (e) {
       showErr(dbResult, 'Could not fetch empty card count: ' + e.message);
       endOp(removeEmptyBtn, removeEmptySpinner);
+      _removeEmptyInFlight = false;
       return;
     } finally {
       // Re-enable for confirm dialog (button must be clickable visually)
       endOp(removeEmptyBtn, removeEmptySpinner);
+    }
+
+    // UX: bail early if there is nothing to delete
+    if (emptyCount === 0) {
+      showResult(dbResult, '<span class="maint-ok">No empty cards found.</span>', false);
+      _removeEmptyInFlight = false;
+      return;
     }
 
     const ok = await confirm(
@@ -273,7 +290,10 @@
       'Remove ' + emptyCount + ' Empty Card(s)',
       'btn btn-danger'
     );
-    if (!ok) return;
+    if (!ok) {
+      _removeEmptyInFlight = false;
+      return;
+    }
 
     startOp(removeEmptyBtn, removeEmptySpinner);
     try {
@@ -284,6 +304,7 @@
       showErr(dbResult, e.message);
     } finally {
       endOp(removeEmptyBtn, removeEmptySpinner);
+      _removeEmptyInFlight = false;
     }
   });
 
@@ -339,6 +360,8 @@
   });
 
   deleteUnusedBtn.addEventListener('click', async () => {
+    if (_deleteUnusedInFlight) return;
+    _deleteUnusedInFlight = true;
     // Pre-fetch unused media count
     startOp(deleteUnusedBtn, deleteUnusedSpinner);
     mediaResult.hidden = true;
@@ -349,9 +372,17 @@
     } catch (e) {
       showErr(mediaResult, 'Could not fetch unused media count: ' + e.message);
       endOp(deleteUnusedBtn, deleteUnusedSpinner);
+      _deleteUnusedInFlight = false;
       return;
     } finally {
       endOp(deleteUnusedBtn, deleteUnusedSpinner);
+    }
+
+    // UX: bail early if there is nothing to delete
+    if (unusedCount === 0) {
+      showResult(mediaResult, '<span class="maint-ok">No unused media found.</span>', false);
+      _deleteUnusedInFlight = false;
+      return;
     }
 
     const ok = await confirm(
@@ -360,7 +391,10 @@
       'Delete ' + unusedCount + ' File(s)',
       'btn btn-danger'
     );
-    if (!ok) return;
+    if (!ok) {
+      _deleteUnusedInFlight = false;
+      return;
+    }
 
     startOp(deleteUnusedBtn, deleteUnusedSpinner);
     try {
@@ -371,6 +405,7 @@
       showErr(mediaResult, e.message);
     } finally {
       endOp(deleteUnusedBtn, deleteUnusedSpinner);
+      _deleteUnusedInFlight = false;
     }
   });
 

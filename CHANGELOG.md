@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Code Critic remediation (feat/admin-actions)
+
+- **HIGH XSS — diagnostics.js summary strip**: Added `escHtml()` helper (mirrors
+  `maintenance.js`). `status` from unauthenticated `/health` is now escaped in
+  both the `class="status-…"` suffix and the visible `<strong>` text. `note_count`
+  is coerced via `Number(…).toLocaleString()` (was already guarded but tightened
+  to match the `total` pattern). All other summary-strip slots use numeric
+  `.toLocaleString()` or static strings — no further escaping needed.
+
+- **MEDIUM in-flight guards — maintenance.js** (`removeEmptyBtn`,
+  `deleteUnusedBtn`): Module-level boolean flags (`_removeEmptyInFlight`,
+  `_deleteUnusedInFlight`) prevent a second destructive dispatch while a
+  pre-fetch or confirm dialog is pending. Flags are set before `startOp` and
+  cleared in `finally`; fast double-clicks bail immediately.
+
+- **MEDIUM empty-count UX — maintenance.js**: `removeEmptyBtn` now shows "No
+  empty cards found." and returns without a confirm dialog when
+  `emptyCardCount === 0`. `deleteUnusedBtn` shows "No unused media found." when
+  the unused list is empty.
+
+- **LOW preset-switch race — scheduling.js**: `onPresetChange()` snapshots
+  `currentConfig = { ...allPresets[idx] }` (shallow copy) before calling
+  `loadFsrsPanel()`, preventing a fast preset-switch from showing mismatched FSRS
+  data from a stale async fetch.
+
+- **CHORE — tests/test_admin_triage_actions.py:569**: Removed unused `note_a`
+  variable assignment (ruff F841) — call result is intentionally side-effect-only.
+
 ### Added — A9: Diagnostics dashboard (feat/admin-actions) (CHECKPOINT)
 
 #### GET /admin/diagnostics — Diagnostics Dashboard

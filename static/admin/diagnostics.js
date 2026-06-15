@@ -112,6 +112,15 @@
     return hr + " h " + remMin + " m";
   }
 
+  /** Escape a value for safe insertion into innerHTML. */
+  function escHtml(val) {
+    return String(val)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
   /** Trim a date-string array for display on bar charts (thin out labels). */
   function thinLabels(labels, maxTicks) {
     if (labels.length <= maxTicks) return labels;
@@ -174,9 +183,13 @@
 
     const total = cardData ? cardData.total : "—";
     const notes = healthData && healthData.note_count != null
-      ? healthData.note_count.toLocaleString()
+      ? Number(healthData.note_count).toLocaleString()
       : "—";
-    const status = healthData ? healthData.status : "—";
+    // status comes from unauthenticated /health — must be escaped in both
+    // the class-suffix position and the visible text position.
+    const rawStatus = healthData ? healthData.status : "—";
+    const safeStatusClass = escHtml(rawStatus);
+    const safeStatusText  = escHtml(rawStatus);
 
     strip.innerHTML =
       '<div class="diag-summary-items">' +
@@ -208,7 +221,7 @@
           : "") +
         '<span class="diag-summary-sep">·</span>' +
         '<span class="diag-summary-item">' +
-          '<strong class="status-' + status + '">' + status + '</strong>' +
+          '<strong class="status-' + safeStatusClass + '">' + safeStatusText + '</strong>' +
           '<span class="diag-summary-sub">collection</span>' +
         '</span>' +
       '</div>';

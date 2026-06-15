@@ -313,7 +313,10 @@
       fsrsCard.hidden = true;
       return;
     }
-    currentConfig = allPresets[idx];
+    // Snapshot the selected preset before any async work so that a fast
+    // preset-switch while loadFsrsPanel() is in-flight cannot cause a race
+    // where the FSRS panel shows data for a different preset than the form.
+    currentConfig = { ...allPresets[idx] };
 
     // Update preset id label
     presetIdLabel.textContent = "(id " + currentConfig.id + ")";
