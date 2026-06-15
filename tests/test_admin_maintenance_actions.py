@@ -349,6 +349,89 @@ class TestRemoveEmptyCards:
         result = invoke("removeEmptyCards")
         assert "removeEmptyCards" in Path(result["backup"]).name
 
+    def test_partial_empty_multicard_note_preserves_note_and_nonempty_card(
+        self, destructive_col: None
+    ) -> None:
+        """Regression: removeEmptyCards must not delete a note when only one of its
+        cards is empty.
+
+        Setup:
+          1. Create a 2-template notetype (Card1 → {{Field1}}, Card2 → {{Field2}}).
+          2. Add a note with BOTH fields filled — Anki generates 2 cards.
+          3. Update the note to blank Field2 — Card2 becomes empty while Card1 remains
+             non-empty (the existing card object persists; its template now renders "").
+          4. Confirm getEmptyCards reports willDeleteNote=False for our note.
+          5. Call removeEmptyCards.
+          6. Assert: note still exists, exactly 1 card remains, getEmptyCards reports 0.
+
+        Note: Anki does not generate a card at all when the corresponding template
+        field is empty at insert time — the "empty card" state only arises on
+        existing cards whose field is subsequently cleared.  Steps 2→3 reproduce
+        the realistic scenario.
+
+        Guards against a future regression if the remove logic is re-implemented
+        manually and accidentally deletes the whole note instead of only the
+        empty card.
+        """
+        from anki.models import NotetypeId  # noqa: PLC0415
+
+        col = col_mod.get_col()
+        mm = col.models
+
+        with col_mod._col_lock:
+            # Build a 2-template notetype
+            nt = mm.new("TestTwoField")
+            for fname in ("Field1", "Field2"):
+                mm.add_field(nt, mm.new_field(fname))
+            for tname, qfmt in (("Card1", "{{Field1}}"), ("Card2", "{{Field2}}")):
+                tmpl = mm.new_template(tname)
+                tmpl["qfmt"] = qfmt
+                tmpl["afmt"] = "{{FrontSide}}"
+                mm.add_template(nt, tmpl)
+            mm.add_dict(nt)
+
+            # Add note with both fields filled → 2 cards are generated
+            persisted_nt = mm.by_name("TestTwoField")
+            note = col.new_note(mm.get(NotetypeId(persisted_nt["id"])))
+            note.fields[0] = "non-empty content"
+            note.fields[1] = "also non-empty"
+            col.add_note(note, col.decks.id("Default"))
+            note_id = int(note.id)
+
+            # Blank Field2 → Card2 (ord 1) now renders to "" and becomes an empty card
+            live_note = col.get_note(note.id)
+            live_note.fields[1] = ""
+            col.update_note(live_note)
+
+        # Sanity: 2 cards still exist in the DB (existing card objects are not deleted on edit)
+        with col_mod._col_lock:
+            all_cards = list(col.card_ids_of_note(note.id))
+        assert len(all_cards) == 2, "Both cards should still exist before removal"
+
+        # Confirm getEmptyCards sees exactly 1 empty card and willDeleteNote is False
+        ec_before = invoke("getEmptyCards")
+        matching = [e for e in ec_before["notes"] if e["noteId"] == note_id]
+        assert len(matching) == 1, "Expected exactly one empty-card entry for our note"
+        assert matching[0]["willDeleteNote"] is False, (
+            "willDeleteNote should be False — note still has a non-empty card"
+        )
+        assert len(matching[0]["cardIds"]) == 1, "Exactly one card should be empty"
+
+        # Remove empty cards
+        invoke("removeEmptyCards")
+
+        # Note must still exist with exactly 1 card remaining
+        with col_mod._col_lock:
+            remaining_cards = list(col.card_ids_of_note(note.id))
+        assert len(remaining_cards) == 1, (
+            "Note should retain its one non-empty card after removeEmptyCards"
+        )
+
+        # getEmptyCards must report 0 for this note now
+        ec_after = invoke("getEmptyCards")
+        still_empty = [e for e in ec_after["notes"] if e["noteId"] == note_id]
+        assert still_empty == [], "No empty-card entries should remain for this note"
+
 
 # ---------------------------------------------------------------------------
 # Tests: mediaCheck

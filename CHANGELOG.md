@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Code Critic HIGH remediation: maintenance/backup (feat/admin-actions)
+
+**`src/maintenance.py` — WAL checkpoint abort on failure**
+
+- Changed the `except` around `pragma wal_checkpoint(TRUNCATE)` from
+  log-and-continue to `raise ValueError(...)` — a failed checkpoint means the
+  WAL has not been flushed into the main `.anki2` file; proceeding with a
+  `shutil.copy2` would produce a structurally incomplete backup.  The
+  `ValueError` propagates through the action handler (which converts it to
+  `{"result":null,"error":"..."}` HTTP 200) and prevents the destructive
+  operation from running.
+
+**`tests/test_admin_maintenance_actions.py` — regression test for partial-empty note**
+
+- Added `TestRemoveEmptyCards.test_partial_empty_multicard_note_preserves_note_and_nonempty_card`:
+  creates a 2-template notetype, adds a note with both fields filled (2 cards
+  generated), clears Field2 so Card2 becomes empty, asserts `getEmptyCards`
+  reports `willDeleteNote=False`, calls `removeEmptyCards`, then asserts the
+  note survives with exactly 1 card and `getEmptyCards` returns 0.  Guards
+  against a future regression if the remove logic is ever reimplemented manually.
+  (Note: Anki does not generate a card when the template field is empty at insert
+  time — the "empty card" state is reached only by clearing a field on a
+  previously-created note; the test reproduces that realistic scenario.)
+
 ### Added — P0 DB & Media health actions + pre_backup helper (feat/admin-actions, A4)
 
 Eight new actions for database integrity, collection optimisation, empty-card

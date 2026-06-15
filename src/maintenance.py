@@ -89,11 +89,15 @@ def pre_backup(reason: str) -> str:
 
     # Flush WAL so the .anki2 file is consistent before copy.
     # Result is [[wal_log, frames_checkpointed, frames_moved]] — ignore value.
+    # A failed checkpoint means the WAL has not been merged into the main file;
+    # proceeding with a copy would produce an incomplete backup, so we abort.
     try:
         col.db.execute("pragma wal_checkpoint(TRUNCATE)")
         log.debug("pre_backup: WAL checkpoint completed for %s", col_path)
     except Exception as exc:  # noqa: BLE001
-        log.warning("pre_backup: WAL checkpoint failed (proceeding with copy): %s", exc)
+        raise ValueError(
+            f"pre_backup: WAL checkpoint failed — aborting to avoid an incomplete backup: {exc}"
+        ) from exc
 
     try:
         shutil.copy2(str(col_path), str(backup_path))
