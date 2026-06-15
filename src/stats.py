@@ -309,20 +309,28 @@ def stat_ease_distribution(params: dict) -> dict:  # noqa: ARG001
       cards.factor (which will be mostly-default or zero under FSRS); a
       separate FSRS-optimised difficulty histogram is out of scope for this
       action.
+
+    Threading note:
+      FSRS detection (``col.decks.all_config()``) and the SQL query are both
+      executed inside ``col_mod._col_lock`` so that detection and data fetch
+      are atomic.  Without this, a concurrent write that enables FSRS between
+      the two steps could produce a mismatched label.
     """
     col = _col()
 
-    # Detect FSRS: any deck config with non-empty fsrsParams6 or fsrsParams5
-    fsrs_enabled = False
-    try:
-        for cfg in col.decks.all_config():
-            if cfg.get("fsrsParams6") or cfg.get("fsrsParams5"):
-                fsrs_enabled = True
-                break
-    except Exception:
-        pass  # best-effort detection
-
     with col_mod._col_lock:
+        # Detect FSRS inside the lock so detection + SQL are atomic.
+        # A concurrent write enabling FSRS between detection and query
+        # would otherwise produce a stale/mismatched fsrs_note label.
+        fsrs_enabled = False
+        try:
+            for cfg in col.decks.all_config():
+                if cfg.get("fsrsParams6") or cfg.get("fsrsParams5"):
+                    fsrs_enabled = True
+                    break
+        except Exception:
+            pass  # best-effort detection
+
         try:
             rows = col.db.all(
                 "SELECT factor FROM cards WHERE queue = 2 AND factor > 0"
@@ -428,13 +436,29 @@ def stat_future_due(params: dict) -> list[dict]:
 
 
 def stat_reviews_by_day(params: dict) -> list[dict]:
-    """Return daily review counts and time from revlog.
+    """Return daily repetition counts and time from revlog.
 
     Params:
         ``{"days": int = 365}``
 
     Output:
-        ``[{"date": "YYYY-MM-DD", "count": int, "timeMs": int}, ...]``
+        ``[{"date": "YYYY-MM-DD",
+            "count": int,
+            "reps": int,
+            "reviews": int,
+            "timeMs": int}, ...]``
+
+    Counting semantics (intentional, Anki-consistent):
+      ``reps`` (= ``count``) counts ALL revlog entries regardless of
+      ``revlog.type``: learning (0), review (1), relearning (2), and
+      filtered/cram (3).  This matches Anki's own "Reviews" graph and
+      its "reviewed today" statistic, and matches ``getNumCardsReviewedByDay``.
+      It is NOT review-type-only — the name "reps" is used to make this
+      explicit.
+
+      ``reviews`` counts only entries with ``revlog.type = 1`` (true review
+      reps of graduated cards), so callers who need pure-review throughput
+      can use that field without re-querying.
 
     Window: last ``days`` scheduler days, using the same convention as
     ``_get_num_cards_reviewed_by_day`` (which groups all revlog by UTC date).
@@ -449,26 +473,38 @@ def stat_reviews_by_day(params: dict) -> list[dict]:
     with col_mod._col_lock:
         try:
             rows = col.db.all(
-                "SELECT id, time FROM revlog WHERE id >= ? ORDER BY id",
+                "SELECT id, time, type FROM revlog WHERE id >= ? ORDER BY id",
                 start_ms,
             )
         except Exception as exc:
             raise ValueError(f"statReviewsByDay: query failed: {exc}") from exc
 
-    # Aggregate by UTC date (same convention as getNumCardsReviewedByDay)
-    day_counts: dict[str, int] = {}
+    # Aggregate by UTC date (same convention as getNumCardsReviewedByDay).
+    # reps    = all rep types (matches Anki "Reviews" graph).
+    # reviews = type=1 only (graduated card review reps).
+    day_reps: dict[str, int] = {}
+    day_reviews: dict[str, int] = {}
     day_time: dict[str, int] = {}
 
-    for ts_ms, time_ms in rows:
+    for ts_ms, time_ms, rep_type in rows:
         day_str = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime(
             "%Y-%m-%d"
         )
-        day_counts[day_str] = day_counts.get(day_str, 0) + 1
+        day_reps[day_str] = day_reps.get(day_str, 0) + 1
+        if rep_type == 1:
+            day_reviews[day_str] = day_reviews.get(day_str, 0) + 1
         day_time[day_str] = day_time.get(day_str, 0) + (time_ms or 0)
 
     return [
-        {"date": day, "count": day_counts[day], "timeMs": day_time[day]}
-        for day in sorted(day_counts)
+        {
+            "date": day,
+            # count == reps: all rep types, Anki-consistent "reviewed today"
+            "count": day_reps[day],
+            "reps": day_reps[day],
+            "reviews": day_reviews.get(day, 0),
+            "timeMs": day_time[day],
+        }
+        for day in sorted(day_reps)
     ]
 
 
@@ -531,7 +567,18 @@ def stat_time_spent(params: dict) -> dict:
     Output:
         ``{"totalMs": int,
            "perDayMs": [{"date": "YYYY-MM-DD", "ms": int}, ...],
-           "avgMsPerReview": float|None}``
+           "avgMsPerRep": float|None}``
+
+    Counting semantics (intentional, Anki-consistent):
+      Time totals cover ALL revlog entries regardless of ``revlog.type``
+      (learning, review, relearning, filtered).  This matches Anki's own
+      "Time Spent" graph.  The average is therefore ms-per-repetition across
+      all rep types, not ms-per-review-type-only — the key is named
+      ``avgMsPerRep`` to make this explicit.
+
+      ``avgMsPerRep`` is ``None`` when the window contains zero repetitions
+      (empty window or no revlog in the look-back period) to avoid
+      division-by-zero.
 
     Window uses the same ``day_cutoff`` convention.
     """
@@ -552,7 +599,7 @@ def stat_time_spent(params: dict) -> dict:
 
     day_time: dict[str, int] = {}
     total_ms = 0
-    total_reviews = 0
+    total_reps = 0
 
     for ts_ms, time_ms in rows:
         t = time_ms or 0
@@ -561,10 +608,11 @@ def stat_time_spent(params: dict) -> dict:
         )
         day_time[day_str] = day_time.get(day_str, 0) + t
         total_ms += t
-        total_reviews += 1
+        total_reps += 1
 
-    avg_ms: float | None = (
-        round(total_ms / total_reviews, 2) if total_reviews > 0 else None
+    # Guard div-by-zero: empty window → None (no reps in look-back period).
+    avg_ms_per_rep: float | None = (
+        round(total_ms / total_reps, 2) if total_reps > 0 else None
     )
 
     return {
@@ -573,7 +621,7 @@ def stat_time_spent(params: dict) -> dict:
             {"date": day, "ms": day_time[day]}
             for day in sorted(day_time)
         ],
-        "avgMsPerReview": avg_ms,
+        "avgMsPerRep": avg_ms_per_rep,
     }
 
 

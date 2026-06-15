@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Code Critic WARN remediation: honest naming + atomicity (feat/admin-actions A5)
+
+Addresses WARN findings from the Code Critic review of `src/stats.py`.
+Counting semantics are UNCHANGED — all fixes are naming, documentation, and
+a thread-safety improvement.
+
+**`statReviewsByDay` — clarified naming + dual rep-type fields:**
+
+- The action has always counted ALL `revlog` entries regardless of
+  `revlog.type` (learning=0, review=1, relearning=2, filtered=3), matching
+  Anki's own "Reviews" graph and `getNumCardsReviewedByDay`.  This is correct
+  and intentional; the Critic WARN was that the name "reviews" implied
+  review-type-only.
+- Fix: docstring now explicitly states "counts ALL repetitions (learning +
+  review + relearning + filtered), matching Anki's Reviews graph — NOT
+  review-type-only."
+- The SQL query now fetches `revlog.type` alongside `id` and `time`.
+- Two new output fields added per day (no breaking change — existing
+  `count` and `timeMs` are preserved):
+  - `reps` (int): all rep types, equal to `count`; name makes the
+    all-type semantics explicit.
+  - `reviews` (int): `revlog.type = 1` only (graduated card review reps),
+    so callers who need pure-review throughput do not need a second query.
+- Fixture has 40 total reps (28 type=1 + 12 type=0); both values now
+  independently tested.
+
+**`statTimeSpent` — rename `avgMsPerReview` → `avgMsPerRep`:**
+
+- The time total has always covered ALL rep types (matches Anki's "Time
+  Spent" graph), making the key name `avgMsPerReview` misleading.
+- **BREAKING rename**: output key `avgMsPerReview` → `avgMsPerRep`.
+  Any callers reading this field must update their key lookup.
+- Docstring updated to state "ALL revlog entries regardless of type".
+- `avgMsPerRep` is `None` when the window contains zero repetitions
+  (div-by-zero guard was already present; now explicitly documented).
+
+**`statEaseDistribution` — atomic FSRS detection + SQL under lock:**
+
+- The `col.decks.all_config()` FSRS-detection loop was previously executed
+  BEFORE entering `col_mod._col_lock`, meaning a concurrent write that
+  enabled FSRS between detection and the SQL query could produce a stale
+  `fsrs_note` label.
+- Fix: moved the detection loop INSIDE the `with col_mod._col_lock:` block
+  so detection and SQL fetch are atomic under `threads=2`.  No behaviour
+  change in single-threaded usage.
+
+**Tests (`tests/test_admin_stats.py`):**
+
+- `TestStatReviewsByDay.test_shape`: now asserts `reps` and `reviews` keys.
+- `TestStatReviewsByDay.test_reps_equals_count`: new — verifies `reps == count`.
+- `TestStatReviewsByDay.test_reviews_lte_reps`: new — verifies `reviews <= reps`.
+- `TestStatReviewsByDay.test_fixture_total_reps_all_types`: renamed from
+  `test_fixture_total_reviews`; comment clarified as "all rep types, 40 total".
+- `TestStatReviewsByDay.test_fixture_total_reviews_type1_only`: new — asserts
+  `sum(reviews) == 28` (fixture has 28 type=1 entries).
+- `TestStatTimeSpent.*`: all `avgMsPerReview` references renamed to
+  `avgMsPerRep`; `test_avg_ms_per_review_range` renamed
+  `test_avg_ms_per_rep_range`.
+- `TestStatTimeSpent.test_fixture_known_time`: docstring clarified to state
+  "ALL rep types counted (Anki-consistent): 28×10000ms + 12×5000ms = 340000ms".
+
+53 tests, all passing.  `ruff check` clean.
+
 ### Added — P0 diagnostics & stats actions (feat/admin-actions A5)
 
 New module `src/stats.py` adds 8 read-only diagnostic action handlers registered
@@ -23,9 +86,9 @@ queries run under `col_mod._col_lock` for consistency.  All errors propagate as
 | `statIntervalDistribution` | (none) | 7-bucket interval histogram (queue=2 cards) |
 | `statEaseDistribution` | (none) | SM-2 ease factor histogram + FSRS note |
 | `statFutureDue` | `{days=30}` | per-day due counts for next N days |
-| `statReviewsByDay` | `{days=365}` | daily review counts + time from revlog |
+| `statReviewsByDay` | `{days=365}` | daily `{count, reps, reviews, timeMs}` from revlog (all types) |
 | `statAddedByDay` | `{days=365}` | daily card-creation counts |
-| `statTimeSpent` | `{days=30}` | total + per-day + avg ms from revlog.time |
+| `statTimeSpent` | `{days=30}` | `{totalMs, perDayMs, avgMsPerRep}` from revlog (all types) |
 
 **Due semantics confirmed (empirically):**
 `cards.due` for queue=2 (review) cards is an integer day number since `col.crt`.
@@ -42,10 +105,11 @@ string explaining the limitation.  Per-card FSRS difficulty extraction would
 require parsing the JSON blob for every review card — expensive and fragile
 across Anki versions — so it is not implemented.
 
-**Tests:** `tests/test_admin_stats.py` — 50 tests, all passing.  Covers shape
+**Tests:** `tests/test_admin_stats.py` — 53 tests, all passing.  Covers shape
 validation, math sanity (pass ≤ total, 0 ≤ retention ≤ 100), cross-action
 consistency (interval sum == review count; `statReviewsByDay` matches
 `getNumCardsReviewedByDay`), and fixture-specific known-value assertions.
+(Test count reflects Code Critic remediation additions above.)
 
 ### Fixed — Code Critic HIGH remediation: maintenance/backup (feat/admin-actions)
 

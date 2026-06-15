@@ -443,16 +443,36 @@ class TestStatFutureDue:
 
 class TestStatReviewsByDay:
     def test_shape(self, col: None) -> None:
-        """Result must be a list of {date, count, timeMs} dicts."""
+        """Result must be a list of {date, count, reps, reviews, timeMs} dicts."""
         result = invoke("statReviewsByDay", days=365)
         assert isinstance(result, list)
         for entry in result:
             assert "date" in entry
             assert "count" in entry
+            assert "reps" in entry
+            assert "reviews" in entry
             assert "timeMs" in entry
             assert isinstance(entry["date"], str)
             assert isinstance(entry["count"], int)
+            assert isinstance(entry["reps"], int)
+            assert isinstance(entry["reviews"], int)
             assert isinstance(entry["timeMs"], int)
+
+    def test_reps_equals_count(self, col: None) -> None:
+        """reps must equal count (both are all-type totals, Anki-consistent)."""
+        result = invoke("statReviewsByDay", days=365)
+        for entry in result:
+            assert entry["reps"] == entry["count"], (
+                f"date={entry['date']}: reps={entry['reps']} != count={entry['count']}"
+            )
+
+    def test_reviews_lte_reps(self, col: None) -> None:
+        """reviews (type=1 only) must be <= reps (all types) per day."""
+        result = invoke("statReviewsByDay", days=365)
+        for entry in result:
+            assert entry["reviews"] <= entry["reps"], (
+                f"date={entry['date']}: reviews={entry['reviews']} > reps={entry['reps']}"
+            )
 
     def test_counts_positive(self, col: None) -> None:
         """Every returned entry must have count > 0."""
@@ -467,6 +487,7 @@ class TestStatReviewsByDay:
         getNumCardsReviewedByDay covers ALL revlog; statReviewsByDay covers
         the last N days.  For days=365 (which covers all fixture revlog),
         the date→count mapping must match exactly.
+        count/reps are all-rep-type totals (same as getNumCardsReviewedByDay).
         """
         reviewed_by_day_raw = invoke("getNumCardsReviewedByDay")
         assert isinstance(reviewed_by_day_raw, list)
@@ -488,11 +509,31 @@ class TestStatReviewsByDay:
                 f"!= getNumCardsReviewedByDay count={gn_map[date]}"
             )
 
-    def test_fixture_total_reviews(self, col: None) -> None:
-        """Fixture has 40 revlog entries across 7 days; days=365 should capture all."""
+    def test_fixture_total_reps_all_types(self, col: None) -> None:
+        """Fixture has 40 revlog entries (28 type=1 + 12 type=0) across 7 days.
+
+        count/reps count ALL repetition types (learning + review + relearning +
+        filtered), matching Anki's "Reviews" graph and reviewed-today stat.
+        days=365 should capture all 40 entries.
+        """
         result = invoke("statReviewsByDay", days=365)
-        total = sum(entry["count"] for entry in result)
-        assert total == 40, f"Expected 40 total reviews, got {total}"
+        total_reps = sum(entry["reps"] for entry in result)
+        total_count = sum(entry["count"] for entry in result)
+        # Both fields are all-type totals — must agree and equal 40.
+        assert total_reps == 40, f"Expected 40 total reps (all types), got {total_reps}"
+        assert total_count == total_reps, "count must equal reps"
+
+    def test_fixture_total_reviews_type1_only(self, col: None) -> None:
+        """Fixture has 28 type=1 (review-type) revlog entries across 7 days.
+
+        reviews counts only revlog.type=1 (graduated card review reps),
+        NOT learning or relearning.  days=365 should capture all 28.
+        """
+        result = invoke("statReviewsByDay", days=365)
+        total_reviews = sum(entry["reviews"] for entry in result)
+        assert total_reviews == 28, (
+            f"Expected 28 type=1 reviews, got {total_reviews}"
+        )
 
     def test_fixture_7_days(self, col: None) -> None:
         """Fixture revlog spans exactly 7 distinct days."""
@@ -560,15 +601,15 @@ class TestStatAddedByDay:
 
 class TestStatTimeSpent:
     def test_shape(self, col: None) -> None:
-        """Result must have totalMs, perDayMs list, avgMsPerReview."""
+        """Result must have totalMs, perDayMs list, avgMsPerRep."""
         result = invoke("statTimeSpent", days=30)
         assert isinstance(result, dict)
         assert "totalMs" in result
         assert "perDayMs" in result
-        assert "avgMsPerReview" in result
+        assert "avgMsPerRep" in result
         assert isinstance(result["totalMs"], int)
         assert isinstance(result["perDayMs"], list)
-        avg = result["avgMsPerReview"]
+        avg = result["avgMsPerRep"]
         assert avg is None or isinstance(avg, (int, float))
 
     def test_total_ms_non_negative(self, col: None) -> None:
@@ -583,15 +624,19 @@ class TestStatTimeSpent:
             f"perDayMs sum={per_day_total} != totalMs={result['totalMs']}"
         )
 
-    def test_avg_ms_per_review_range(self, col: None) -> None:
-        """avgMsPerReview must be None (no reviews) or a positive number."""
+    def test_avg_ms_per_rep_range(self, col: None) -> None:
+        """avgMsPerRep must be None (empty window) or a positive number."""
         result = invoke("statTimeSpent", days=365)
-        avg = result["avgMsPerReview"]
+        avg = result["avgMsPerRep"]
         if avg is not None:
-            assert avg > 0, f"avgMsPerReview={avg} must be positive when not None"
+            assert avg > 0, f"avgMsPerRep={avg} must be positive when not None"
 
     def test_fixture_known_time(self, col: None) -> None:
-        """Fixture revlog: 28 type=1 reviews × 10000ms + 12 type=0 × 5000ms = 340000ms."""
+        """Fixture revlog: ALL rep types counted (Anki-consistent).
+
+        28 type=1 (review) × 10000ms + 12 type=0 (learning) × 5000ms = 340000ms.
+        totalMs covers every rep type, matching Anki's "Time Spent" graph.
+        """
         result = invoke("statTimeSpent", days=365)
         expected_total_ms = 28 * 10000 + 12 * 5000
         assert result["totalMs"] == expected_total_ms, (
@@ -599,11 +644,11 @@ class TestStatTimeSpent:
         )
 
     def test_avg_ms_zero_window(self, col: None) -> None:
-        """days=1 on old fixture data → 0 reviews → avgMsPerReview=None."""
+        """days=1 on old fixture data → 0 reviews → avgMsPerRep=None."""
         result = invoke("statTimeSpent", days=1)
         # Fixture revlog is months old; 1-day window should be empty
         if result["totalMs"] == 0:
-            assert result["avgMsPerReview"] is None
+            assert result["avgMsPerRep"] is None
 
     def test_default_days_param(self, col: None) -> None:
         """Calling without 'days' param must not raise (defaults to 30)."""
