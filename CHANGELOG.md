@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — P0 DB & Media health actions + pre_backup helper (feat/admin-actions, A4)
+
+Eight new actions for database integrity, collection optimisation, empty-card
+management, and media hygiene.  All implemented in `src/actions.py` and
+registered in `ACTIONS`.  All mutations hold `col_mod._col_lock`; errors raise
+`ValueError` → server converts to `{"result":null,"error":"..."}` HTTP 200.
+
+**New module: `src/maintenance.py`**
+
+- `pre_backup(reason: str) -> str`: copies the live collection `.anki2` file to
+  `<collection_dir>/backups/admin-<reason>-<UTC-stamp>.anki2`.  Uses
+  `col.db.execute("pragma wal_checkpoint(TRUNCATE)")` to flush the WAL into the
+  main file before copying with `shutil.copy2` — safe while the collection is
+  open and held under `_col_lock`.  Called by every destructive action below.
+  Special characters in `reason` are replaced with `-`.
+
+**New actions (all run under `col_mod._col_lock`):**
+
+| Action | Type | Output |
+|---|---|---|
+| `checkDatabase` | read-only | `{problems:[str], ok:bool}` — uses `col._backend.check_database()` (internal API, may break on anki upgrade) |
+| `fixIntegrity` | DESTRUCTIVE + backup | `{message:str, ok:bool, backup:str}` — `col.fix_integrity()` |
+| `optimizeCollection` | DESTRUCTIVE + backup | `{backup:str}` — `col.optimize()` (VACUUM) |
+| `getEmptyCards` | read-only | `{emptyCardCount:int, noteCount:int, report:str, notes:[{noteId,cardIds,willDeleteNote}]}` |
+| `removeEmptyCards` | DESTRUCTIVE + backup | `{removed:int, backup:str}` — `col.remove_cards_and_orphaned_notes()` |
+| `mediaCheck` | read-only | `{unused:[str], missing:[str], report:str, haveTrash:bool}` — `col.media.check()` (rebuilds media DB as side effect) |
+| `deleteUnusedMedia` | DESTRUCTIVE + backup | `{deletedCount:int, backup:str}` — `col.media.trash_files()` + `col.media.empty_trash()`.  NOTE: .anki2 backup does NOT contain media files; restore media from filesystem backup. |
+| `mediaDirSize` | read-only | `{bytes:int, fileCount:int, dir:str}` — walks `col.media.dir()` |
+
+**Confirmed API shapes (empirically verified on anki 25.9.2 /tmp copy):**
+
+- `col._backend.check_database()` → `RepeatedScalarContainer` (iterable of `str`)
+- `col.fix_integrity()` → `tuple[str, bool]` (message, ok)
+- `col.optimize()` → `None`
+- `col.get_empty_cards()` → `EmptyCardsReport` with `.notes` (list of
+  `NoteWithEmptyCards` with `.note_id`, `.card_ids`, `.will_delete_note`) and
+  `.report` (str HTML)
+- `col.media.check()` → `CheckMediaResponse` with `.unused`, `.missing`,
+  `.missing_media_notes`, `.report`, `.have_trash`
+- `col.media.trash_files(fnames: list[str])` → `None`
+- `col.media.empty_trash()` → `None`
+- `col.media.dir()` → `str`
+- Media rebuild: no dedicated rebuild method in anki 25.9.2; `col.media.check()`
+  rebuilds the media hash DB as a side effect.  `col.media.force_resync()`
+  schedules an AnkiWeb re-sync but does NOT rebuild the local hash table.
+
+**Tests: `tests/test_admin_maintenance_actions.py`** — 54 tests; all pass.
+
 ### Security — updateDeckConfig input validation (feat/admin-actions, Code Critic HIGH)
 
 - **Reject unknown preset id**: `updateDeckConfig` now verifies that `cfg["id"]`

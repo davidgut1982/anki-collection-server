@@ -155,6 +155,9 @@ implemented in subsequent steps.
 | Decks (admin) | `deleteDecks`, `renameDeck` |
 | Scheduler | `suspend`, `unsuspend`, `bury`, `unbury`, `setDueDate`, `forgetCards`, `repositionNewCards`, `reposition` |
 | Scheduling config | `getDeckConfig`, `getDeckConfigs`, `updateDeckConfig`, `getFsrsParams`, `setDesiredRetention`, `computeOptimalRetention` |
+| DB health | `checkDatabase`, `fixIntegrity`, `optimizeCollection` |
+| Empty cards | `getEmptyCards`, `removeEmptyCards` |
+| Media health | `mediaCheck`, `deleteUnusedMedia`, `mediaDirSize` |
 | Models | `modelNames`, `createModel`, `modelTemplates` |
 | Models (admin) | `modelFieldNames` |
 | Card mutation | `setSpecificValueOfCard` |

@@ -1567,6 +1567,255 @@ def _compute_optimal_retention(params: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# DB & Media health actions (P0 admin A4)
+# ---------------------------------------------------------------------------
+
+
+def _check_database(params: dict) -> dict:  # noqa: ARG001
+    """Check the Anki database for consistency problems.
+
+    Read-only — no backup required.
+
+    Uses the INTERNAL backend API ``col._backend.check_database()``.  This is
+    NOT part of the public Collection API and may break on anki version
+    upgrades; we wrap it in try/except and document that risk.
+
+    Output: ``{"problems": [str], "ok": bool}``
+
+    Confirmed shape (anki 25.9.2):
+        col._backend.check_database() → google.protobuf.RepeatedScalarContainer
+        (iterable of str problem messages; empty list = no problems found)
+    """
+    col = _col()
+    with col_mod._col_lock:
+        try:
+            raw = col._backend.check_database()
+            problems = list(raw)  # RepeatedScalarContainer → list[str]
+        except Exception as exc:  # noqa: BLE001
+            # Internal backend API — treat any failure as a clean error rather
+            # than letting an opaque proto error surface to the client.
+            raise ValueError(
+                f"checkDatabase: backend check_database() failed — "
+                f"this is an internal API that may break on anki upgrades: {exc}"
+            ) from exc
+
+    return {"problems": problems, "ok": len(problems) == 0}
+
+
+def _fix_integrity(params: dict) -> dict:  # noqa: ARG001
+    """Rebuild and optimise the collection database.
+
+    DESTRUCTIVE: may delete orphaned cards/notes to repair the schema.  A
+    pre-backup is created before the operation.
+
+    Output: ``{"message": str, "ok": bool, "backup": str}``
+
+    Confirmed shape (anki 25.9.2):
+        col.fix_integrity() → tuple[str, bool]  (message, ok)
+    """
+    from src.maintenance import pre_backup  # noqa: PLC0415
+
+    col = _col()
+    with col_mod._col_lock:
+        backup_path = pre_backup("fixIntegrity")
+        message, ok = col.fix_integrity()
+
+    return {"message": message, "ok": ok, "backup": backup_path}
+
+
+def _optimize_collection(params: dict) -> dict:  # noqa: ARG001
+    """Run VACUUM on the collection database to reclaim space.
+
+    DESTRUCTIVE in the sense of being irreversible (rewrites the file); a
+    pre-backup is created first for safety.
+
+    Output: ``{"backup": str}``
+
+    Confirmed shape (anki 25.9.2):
+        col.optimize() → None
+    """
+    from src.maintenance import pre_backup  # noqa: PLC0415
+
+    col = _col()
+    with col_mod._col_lock:
+        backup_path = pre_backup("optimizeCollection")
+        col.optimize()
+
+    return {"backup": backup_path}
+
+
+def _get_empty_cards(params: dict) -> dict:  # noqa: ARG001
+    """Return a report of cards whose templates render empty content.
+
+    Read-only — no backup required.
+
+    Output:
+        ``{"emptyCardCount": int, "noteCount": int, "report": str,
+           "notes": [{"noteId": int, "cardIds": [int], "willDeleteNote": bool}]}``
+
+    Confirmed shape (anki 25.9.2):
+        col.get_empty_cards() → anki.card_rendering_pb2.EmptyCardsReport
+        Fields:
+          .notes  → RepeatedCompositeContainer of NoteWithEmptyCards
+          .report → str (HTML summary)
+        NoteWithEmptyCards fields:
+          .note_id         → int
+          .card_ids        → RepeatedScalarContainer of int
+          .will_delete_note → bool
+    """
+    col = _col()
+    with col_mod._col_lock:
+        ec = col.get_empty_cards()
+
+    notes_list = []
+    total_card_count = 0
+    for n_entry in ec.notes:
+        card_ids = list(n_entry.card_ids)
+        total_card_count += len(card_ids)
+        notes_list.append(
+            {
+                "noteId": n_entry.note_id,
+                "cardIds": card_ids,
+                "willDeleteNote": n_entry.will_delete_note,
+            }
+        )
+
+    return {
+        "emptyCardCount": total_card_count,
+        "noteCount": len(notes_list),
+        "report": ec.report,
+        "notes": notes_list,
+    }
+
+
+def _remove_empty_cards(params: dict) -> dict:  # noqa: ARG001
+    """Delete all empty cards (and their orphaned notes) from the collection.
+
+    DESTRUCTIVE.  A pre-backup is created first.
+
+    Mirrors Anki Desktop's "Check Empty Cards → Delete" behaviour:
+    uses ``col.remove_cards_and_orphaned_notes()`` which removes cards and
+    then automatically deletes any note left with zero remaining cards.
+
+    Output: ``{"removed": int, "backup": str}``
+
+    Confirmed API (anki 25.9.2):
+        col.remove_cards_and_orphaned_notes(card_ids: list[CardId]) → None
+    """
+    from anki.cards import CardId  # noqa: PLC0415
+    from src.maintenance import pre_backup  # noqa: PLC0415
+
+    col = _col()
+    with col_mod._col_lock:
+        ec = col.get_empty_cards()
+        all_empty_card_ids: list[int] = []
+        for n_entry in ec.notes:
+            all_empty_card_ids.extend(list(n_entry.card_ids))
+
+        removed = len(all_empty_card_ids)
+        if removed == 0:
+            # Nothing to do; still create backup for audit trail consistency,
+            # but skip the remove call.
+            backup_path = pre_backup("removeEmptyCards")
+            return {"removed": 0, "backup": backup_path}
+
+        backup_path = pre_backup("removeEmptyCards")
+        col.remove_cards_and_orphaned_notes([CardId(cid) for cid in all_empty_card_ids])
+
+    return {"removed": removed, "backup": backup_path}
+
+
+def _media_check(params: dict) -> dict:  # noqa: ARG001
+    """Scan the media folder and report unused and missing files.
+
+    Read-only (though ``col.media.check()`` rebuilds the media DB as a side
+    effect — it rewrites the internal media hash table, which is non-destructive
+    from a user-data perspective).
+
+    NOTE on media rebuild: ``col.media.check()`` already rebuilds the media
+    database as part of its scan.  There is no separate "rebuildMediaDb" method
+    exposed by anki 25.9.2.  ``col.media.force_resync()`` forces a re-sync
+    with AnkiWeb on the next sync but does not rebuild the local hash table —
+    it is not the equivalent of a rebuild.
+
+    Output:
+        ``{"unused": [str], "missing": [str], "report": str, "haveTrash": bool}``
+
+    Confirmed shape (anki 25.9.2):
+        col.media.check() → anki.media_pb2.CheckMediaResponse
+        Fields: .unused, .missing, .missing_media_notes, .report, .have_trash
+    """
+    col = _col()
+    with col_mod._col_lock:
+        resp = col.media.check()
+
+    return {
+        "unused": list(resp.unused),
+        "missing": list(resp.missing),
+        "report": resp.report,
+        "haveTrash": resp.have_trash,
+    }
+
+
+def _delete_unused_media(params: dict) -> dict:  # noqa: ARG001
+    """Move all unused media files to the media trash, then empty the trash.
+
+    DESTRUCTIVE (media deletion is not reversed by restoring the .anki2
+    backup — the backup only contains the collection database, not the media
+    folder).  A pre-backup of the .anki2 file is still created for audit-trail
+    consistency and to capture the collection state at the time of deletion.
+
+    NOTE: the backup does NOT contain media files.  If you need to recover
+    deleted media files, restore them from a filesystem backup of the media
+    folder (``col.media.dir()``).
+
+    Output: ``{"deletedCount": int, "backup": str}``
+    """
+    from src.maintenance import pre_backup  # noqa: PLC0415
+
+    col = _col()
+    with col_mod._col_lock:
+        resp = col.media.check()
+        unused = list(resp.unused)
+
+        backup_path = pre_backup("deleteUnusedMedia")
+
+        if unused:
+            col.media.trash_files(unused)
+            col.media.empty_trash()
+
+    return {"deletedCount": len(unused), "backup": backup_path}
+
+
+def _media_dir_size(params: dict) -> dict:  # noqa: ARG001
+    """Return total size and file count of the media directory.
+
+    Read-only — no backup required.
+
+    Output: ``{"bytes": int, "fileCount": int, "dir": str}``
+    """
+    import os as _os  # noqa: PLC0415
+
+    col = _col()
+    with col_mod._col_lock:
+        media_dir = col.media.dir()
+
+    total_bytes = 0
+    file_count = 0
+    if _os.path.isdir(media_dir):
+        for _root, _dirs, files in _os.walk(media_dir):
+            for fname in files:
+                fpath = _os.path.join(_root, fname)
+                try:
+                    total_bytes += _os.path.getsize(fpath)
+                    file_count += 1
+                except OSError:
+                    pass  # Skip files we can't stat (race condition, etc.)
+
+    return {"bytes": total_bytes, "fileCount": file_count, "dir": media_dir}
+
+
+# ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
 
@@ -1636,4 +1885,13 @@ ACTIONS: dict[str, Any] = {
     "getFsrsParams": _get_fsrs_params,
     "setDesiredRetention": _set_desired_retention,
     "computeOptimalRetention": _compute_optimal_retention,
+    # DB & Media health (P0 admin A4)
+    "checkDatabase": _check_database,
+    "fixIntegrity": _fix_integrity,
+    "optimizeCollection": _optimize_collection,
+    "getEmptyCards": _get_empty_cards,
+    "removeEmptyCards": _remove_empty_cards,
+    "mediaCheck": _media_check,
+    "deleteUnusedMedia": _delete_unused_media,
+    "mediaDirSize": _media_dir_size,
 }
