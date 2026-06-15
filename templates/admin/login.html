@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Login — Anki Collection Server</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='admin/admin.css') }}">
+</head>
+<body class="login-body">
+  <div class="login-card">
+    <h1 class="login-title">Anki Admin</h1>
+
+    {% if error %}
+    <p class="login-error" role="alert">{{ error }}</p>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('admin.login_post') }}" class="login-form">
+      <label for="token" class="login-label">Admin Token</label>
+      <input
+        id="token"
+        name="token"
+        type="password"
+        class="login-input"
+        autocomplete="current-password"
+        autofocus
+        required
+        placeholder="Enter ADMIN_TOKEN"
+      >
+      <button type="submit" class="login-btn">Sign in</button>
+    </form>
+
+    <p class="login-hint">
+      Token is set via the <code>ADMIN_TOKEN</code> environment variable.
+    </p>
+  </div>
+</body>
+</html>

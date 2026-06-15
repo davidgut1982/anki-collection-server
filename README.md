@@ -60,6 +60,46 @@ curl -s http://localhost:8765/health
 See `docker-compose.example.yml` for a full example including an optional
 self-hosted sync server.
 
+## Admin console (`/admin`)
+
+An optional web-based admin console is available at `/admin`.
+
+### Enabling the admin UI
+
+Set the `ADMIN_TOKEN` environment variable to a high-entropy secret (32+
+characters recommended):
+
+```bash
+docker run -d \
+  -p 8765:8765 \
+  -v /path/to/anki/collection:/data/collection:rw \
+  -e ANKI_COLLECTION_PATH=/data/collection/collection.anki2 \
+  -e ADMIN_TOKEN=your-secret-token-here \
+  --user 1005:136 \
+  anki-collection-server:dev
+```
+
+If `ADMIN_TOKEN` is **not set**, every request to `/admin/*` returns HTTP 503
+with a plain-text message explaining that the admin UI is disabled. The
+AnkiConnect API (`POST /`) and health probe (`GET /health`) are **not affected**.
+
+### Authentication
+
+The admin console accepts the token via any of the following (checked in order):
+
+| Method | How to use |
+|--------|------------|
+| `X-Admin-Token` header | `curl -H "X-Admin-Token: TOKEN" http://host:8765/admin/` |
+| HTTP Basic Auth | `curl -u :TOKEN http://host:8765/admin/` (any username) |
+| `token` cookie | Set automatically by the login form at `/admin/login` |
+
+All token comparisons use `hmac.compare_digest` (constant-time, safe against
+timing attacks).
+
+The login form at `/admin/login` sets an `HttpOnly; SameSite=Strict` session
+cookie after a valid token is submitted, enabling normal browser navigation
+without re-entering the token on each page.
+
 ## Status
 
 **MVP in progress.** The scaffold and stub server are complete (Step 2 of 13).

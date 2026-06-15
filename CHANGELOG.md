@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — A1: /admin scaffold + token auth gate (feat/admin-actions)
+
+**New files**
+
+- `src/admin/__init__.py` — package; exports `admin_bp`.
+- `src/admin/auth.py` — token authentication helpers.
+  - `ADMIN_TOKEN` read once from env at startup; `ADMIN_TOKEN_CONFIGURED` bool.
+  - If unset, every `/admin*` request returns **HTTP 503** with a clear
+    "set ADMIN_TOKEN" message — the UI is disabled, not open.
+  - Token accepted via (priority order):
+    1. `X-Admin-Token` request header (API / curl).
+    2. HTTP Basic Auth password field (any username) — `curl -u :TOKEN ...`.
+    3. `token` HttpOnly session cookie (set by POST /admin/login).
+  - All comparisons use `hmac.compare_digest` (constant-time).
+- `src/admin/routes.py` — Flask `admin_bp` blueprint (url_prefix `/admin`).
+  - `GET  /admin/login`   — login form (exempt from auth gate).
+  - `POST /admin/login`   — validates token; sets `token` cookie; redirects to `/admin`.
+  - `GET  /admin/`        — dashboard: collection health summary + nav placeholders.
+  - `GET  /admin/logout`  — clears cookie; redirects to `/admin/login`.
+  - `before_request` hook gates all other routes (`admin.login` and
+    `admin.login_post` are exempt).
+- `templates/admin/base.html` — nav header with placeholder links for future
+  panels (Browser, Scheduling, DB & Media, Diagnostics).
+- `templates/admin/login.html` — standalone login page (password input, error display).
+- `templates/admin/index.html` — dashboard: health grid (status, card count,
+  note count, collection path) + panels-pending list for A6–A9.
+- `static/admin/admin.css` — clean, dependency-free CSS (no framework).
+- `static/admin/admin.js` — placeholder; no-op on load.
+
+**Modified files**
+
+- `src/server.py`:
+  - Imports `Path` and `admin_bp`.
+  - `Flask(...)` now explicit `template_folder` and `static_folder` pointing
+    to `<repo>/templates/` and `<repo>/static/` (resolved from `__file__`).
+  - `app.secret_key` derived from `ADMIN_TOKEN` (stable across restarts).
+  - `app.register_blueprint(admin_bp)` — registers `/admin/*` routes.
+  - **POST / and GET /health are completely unaffected.**
+
+**Tests**
+
+- `tests/test_admin_auth.py` — 18 tests, all pass, 0.25 s (no Anki collection needed).
+  - `TestAdminDisabled` (2): 503 with "ADMIN_TOKEN" text; login page still 200.
+  - `TestNoCredentials` (2): GET /admin → 302 to login; POST with empty token → 401.
+  - `TestXAdminTokenHeader` (2): valid header → 200; wrong → 302/401.
+  - `TestBasicAuth` (3): valid → 200; any username accepted; wrong password → 302/401.
+  - `TestCookieAuth` (2): valid cookie → 200; wrong cookie → 302/401.
+  - `TestLoginFlow` (4): login page 200; valid POST → 302 + cookie; wrong POST → 401 + no cookie; logout → 302 + clears cookie.
+  - `TestExistingRoutesUnaffected` (3): /health → 200 with no admin credentials; /health may 503 (collection) never 401; POST / version → 200 with result=6.
+
+**Deployment note (A10)**:
+Add `ADMIN_TOKEN` to the sidecar's `docker-compose` env section before deploy.
+The token must be a high-entropy secret (32+ chars recommended).
+
 ### Fixed — Code Critic remediation (feat/admin-actions)
 
 #### `_find_cards_paginated` — clamp negative offset/limit (HIGH)
