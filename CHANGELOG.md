@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — A8: Database & Media health panel (feat/admin-actions)
+
+#### GET /admin/maintenance — Database & Media Health
+
+New page at `/admin/maintenance` (token-gated, added to base nav).  Renders a
+static shell; all actions are called client-side via `acsInvoke`.
+
+**Database section**
+
+Five operation buttons with inline spinner + per-section result display:
+
+| Button | Action | Confirm? | Destructive? |
+|--------|--------|----------|--------------|
+| Check Database | `checkDatabase` | No | No |
+| Find Empty Cards | `getEmptyCards` | No | No |
+| Optimize (VACUUM) | `optimizeCollection` | ⚠ single | Yes — backup shown |
+| Fix Integrity | `fixIntegrity` | ⚠⚠ double | Yes — backup shown prominently |
+| Remove Empty Cards | `removeEmptyCards` | ⚠⚠ double + count | Yes — backup shown |
+
+Remove Empty Cards pre-fetches the empty card count via `getEmptyCards` and
+interpolates it into the confirm text before calling `removeEmptyCards`.
+
+**Media section**
+
+| Button | Action | Confirm? | Destructive? |
+|--------|--------|----------|--------------|
+| Media Check | `mediaCheck` | No | No |
+| Media Dir Size | `mediaDirSize` | No | No |
+| Delete Unused Media | `deleteUnusedMedia` | ⚠⚠ double + count | Yes — NOT backup-recoverable |
+
+Delete Unused Media pre-fetches the unused file count via `mediaCheck` and
+interpolates it into the confirm text.
+
+**UX details**
+
+- Long-running operations (Optimize, Fix Integrity, Media Check) use a 5-minute
+  AbortController timeout so the browser does not give up early.
+- Every in-flight operation disables its button and shows an inline spinner.
+- Destructive results display the returned backup path in a highlighted
+  monospace box.
+- Unused / missing media file lists are collapsible `<details>` elements,
+  capped at 50 items with a "…and N more" overflow indicator.
+
 ### Added — A7: Scheduling admin page (feat/admin-actions)
 
 #### GET /admin/scheduling — Deck Options + FSRS Panel

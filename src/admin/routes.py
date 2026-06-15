@@ -326,3 +326,17 @@ def scheduling() -> Any:
     /admin/api/invoke proxy.
     """
     return render_template("admin/scheduling.html")
+
+
+# ---------------------------------------------------------------------------
+# A8: Database & Media health panel
+# ---------------------------------------------------------------------------
+
+@admin_bp.get("/maintenance")
+def maintenance() -> Any:
+    """Database & media health panel.
+
+    Renders a static shell; all actions are invoked client-side via acsInvoke.
+    No collection access at render time.
+    """
+    return render_template("admin/maintenance.html")

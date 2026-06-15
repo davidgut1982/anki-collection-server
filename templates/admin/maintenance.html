@@ -1,0 +1,79 @@
+{% extends "admin/base.html" %}
+
+{% block title %}DB &amp; Media{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2 class="page-title">Database &amp; Media</h2>
+</div>
+
+{# ------------------------------------------------------------------ #}
+{# Database section                                                    #}
+{# ------------------------------------------------------------------ #}
+<section class="card">
+  <h3 class="card-title">Database</h3>
+  <div class="maint-btn-row">
+    <button id="check-db-btn" class="btn btn-outline">
+      <span id="check-db-spinner" class="maint-spinner" hidden aria-hidden="true"></span>
+      Check Database
+    </button>
+    <button id="find-empty-btn" class="btn btn-outline">
+      <span id="find-empty-spinner" class="maint-spinner" hidden aria-hidden="true"></span>
+      Find Empty Cards
+    </button>
+    <button id="optimize-btn" class="btn btn-warn">
+      <span id="optimize-spinner" class="maint-spinner" hidden aria-hidden="true"></span>
+      &#9888; Optimize (VACUUM)
+    </button>
+    <button id="fix-integrity-btn" class="btn btn-danger">
+      <span id="fix-integrity-spinner" class="maint-spinner" hidden aria-hidden="true"></span>
+      &#9888;&#9888; Fix Integrity
+    </button>
+    <button id="remove-empty-btn" class="btn btn-danger">
+      <span id="remove-empty-spinner" class="maint-spinner" hidden aria-hidden="true"></span>
+      &#9888;&#9888; Remove Empty Cards
+    </button>
+  </div>
+  <div id="db-result" class="maint-result" hidden></div>
+</section>
+
+{# ------------------------------------------------------------------ #}
+{# Media section                                                       #}
+{# ------------------------------------------------------------------ #}
+<section class="card">
+  <h3 class="card-title">Media</h3>
+  <div class="maint-btn-row">
+    <button id="media-check-btn" class="btn btn-outline">
+      <span id="media-check-spinner" class="maint-spinner" hidden aria-hidden="true"></span>
+      Media Check
+    </button>
+    <button id="media-size-btn" class="btn btn-outline">
+      <span id="media-size-spinner" class="maint-spinner" hidden aria-hidden="true"></span>
+      Media Dir Size
+    </button>
+    <button id="delete-unused-btn" class="btn btn-danger">
+      <span id="delete-unused-spinner" class="maint-spinner" hidden aria-hidden="true"></span>
+      &#9888;&#9888; Delete Unused Media
+    </button>
+  </div>
+  <div id="media-result" class="maint-result" hidden></div>
+</section>
+
+{# ------------------------------------------------------------------ #}
+{# Confirm dialog (same pattern as scheduling.html)                   #}
+{# ------------------------------------------------------------------ #}
+<div class="modal-overlay" id="confirm-overlay" hidden aria-modal="true" role="alertdialog">
+  <div class="modal-box">
+    <h3 class="modal-title" id="confirm-title">Confirm</h3>
+    <p class="modal-body" id="confirm-body"></p>
+    <div class="modal-footer">
+      <button class="btn btn-danger" id="confirm-ok">Confirm</button>
+      <button class="btn btn-sm" id="confirm-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='admin/maintenance.js') }}"></script>
+{% endblock %}

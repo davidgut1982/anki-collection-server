@@ -107,7 +107,37 @@ navigation without re-entering the token on each page.
 | `GET /admin` | Dashboard: collection health summary, links to panels |
 | `GET /admin/browse` | Card/Note Browser: search, paginated table, bulk actions, note editor, Find & Replace, Find Duplicates |
 | `GET /admin/scheduling` | Scheduling: deck options presets, FSRS enable/configure, compute optimal retention |
+| `GET /admin/maintenance` | Database & Media: check database, find/remove empty cards, optimize, fix integrity, check/delete unused media |
 | `POST /admin/api/invoke` | Token-gated AnkiConnect proxy used by all admin pages (not for direct browser use) |
+
+#### /admin/maintenance
+
+Database and media health tools.
+
+**Database section**
+
+- **Check Database** — runs `checkDatabase`; shows OK or a list of problems.
+- **Find Empty Cards** — runs `getEmptyCards`; shows count and Anki's report text.
+- **Optimize (VACUUM)** — single confirm — runs `optimizeCollection` (SQLite VACUUM).
+  Displays the backup path after completion.
+- **Fix Integrity** — double confirm — runs `fixIntegrity`. May delete orphaned
+  cards. Backup is made immediately before the operation and displayed prominently.
+- **Remove Empty Cards** — double confirm with count — pre-fetches the empty card
+  count and shows it in the confirm dialog before calling `removeEmptyCards`.
+  Displays backup path after completion.
+
+**Media section**
+
+- **Media Check** — runs `mediaCheck`; shows unused/missing counts with collapsible
+  file lists (capped at 50 items).
+- **Media Dir Size** — runs `mediaDirSize`; shows human-readable size, file count,
+  and directory path.
+- **Delete Unused Media** — double confirm with count — pre-fetches unused file
+  count via `mediaCheck`, then calls `deleteUnusedMedia`. Note: media files are
+  NOT included in the .anki2 backup and cannot be recovered from it.
+
+Long-running operations (Optimize, Fix Integrity, Media Check) use a 5-minute
+timeout so the browser does not time out during heavy operations.
 
 #### /admin/scheduling
 

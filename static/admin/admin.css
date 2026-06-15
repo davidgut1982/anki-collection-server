@@ -855,3 +855,114 @@ body {
 }
 .sched-optimal-ok  { background: #dcfce7; border: 1px solid #86efac; color: #166534; }
 .sched-optimal-err { background: #fff0f0; border: 1px solid #fca5a5; color: var(--danger); }
+
+/* ================================================================
+   A8: Database & Media maintenance page styles
+   ================================================================ */
+
+/* ---- Button row ---- */
+.maint-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+/* ---- Spinner (reuses .spinner animation from admin.css) ---- */
+.maint-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+/* ---- Result areas ---- */
+.maint-result {
+  margin-top: 8px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.maint-result-ok  { border-color: #86efac; background: #f0fdf4; }
+.maint-result-err { border-color: #fca5a5; background: #fff0f0; color: var(--danger); }
+
+/* ---- Status text ---- */
+.maint-ok   { color: var(--ok);   font-weight: 600; }
+.maint-warn { color: var(--warn); font-weight: 600; }
+
+/* ---- Backup path box ---- */
+.maint-backup-box {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: #fffde7;
+  border: 1px solid #e3b341;
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+
+.maint-backup-box code {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  word-break: break-all;
+}
+
+/* ---- Lists ---- */
+.maint-list {
+  margin: 8px 0 0 16px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.maint-more {
+  color: var(--text-muted);
+  font-style: italic;
+  list-style: none;
+  margin-left: -16px;
+  padding-left: 16px;
+}
+
+/* ---- Collapsible details ---- */
+.maint-details {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.maint-details summary {
+  cursor: pointer;
+  color: var(--accent);
+  user-select: none;
+  padding: 2px 0;
+}
+
+.maint-details summary:hover { text-decoration: underline; }
+
+/* ---- Pre-formatted report ---- */
+.maint-report {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* ---- Dir path ---- */
+.maint-dir {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
