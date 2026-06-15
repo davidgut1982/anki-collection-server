@@ -1,0 +1,151 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Diagnostics{% endblock %}
+
+{% block content %}
+<div class="page-header diag-page-header">
+  <h2 class="page-title">Diagnostics</h2>
+  <div class="diag-time-range-bar">
+    <label class="diag-range-label" for="diag-range">Time range:</label>
+    <select id="diag-range" class="diag-range-select">
+      <option value="30" selected>Last 30 days</option>
+      <option value="90">Last 90 days</option>
+      <option value="365">Last 365 days</option>
+    </select>
+    <button id="diag-refresh-btn" class="btn btn-primary btn-sm" type="button">Refresh</button>
+    <span id="diag-refresh-status" class="diag-refresh-status" aria-live="polite"></span>
+  </div>
+</div>
+
+{# ── Header strip: collection summary ────────────────────────────────────── #}
+<div id="diag-summary-strip" class="diag-summary-strip">
+  <div class="diag-summary-loading">
+    <span class="spinner"></span> Loading collection summary…
+  </div>
+</div>
+
+{# ── Chart grid ───────────────────────────────────────────────────────────── #}
+<div class="diag-grid">
+
+  {# Row 1: card counts + true retention #}
+  <div class="diag-card" id="chart-card-counts-card">
+    <div class="diag-card-header">
+      <h3 class="card-title diag-card-title">Card Counts</h3>
+      <span class="diag-card-subtitle">All cards by scheduling state</span>
+    </div>
+    <div class="diag-chart-wrap diag-chart-doughnut">
+      <canvas id="chart-card-counts" aria-label="Card counts by state"></canvas>
+    </div>
+    <div class="diag-total-label" id="chart-card-counts-total"></div>
+    <div class="diag-empty" id="chart-card-counts-empty" hidden>No card data available.</div>
+    <div class="diag-error" id="chart-card-counts-error" hidden></div>
+  </div>
+
+  <div class="diag-card" id="chart-retention-card">
+    <div class="diag-card-header">
+      <h3 class="card-title diag-card-title">True Retention</h3>
+      <span class="diag-card-subtitle">Pass rate by card maturity (time-range)</span>
+    </div>
+    <div id="chart-retention-table-wrap">
+      <div class="diag-chart-wrap diag-chart-bar">
+        <canvas id="chart-retention" aria-label="True retention by maturity"></canvas>
+      </div>
+      <table class="diag-retention-table" id="diag-retention-table" hidden>
+        <thead>
+          <tr><th>Cohort</th><th>Pass</th><th>Total</th><th>Retention</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="diag-empty" id="chart-retention-empty" hidden>No review data for this period.</div>
+    <div class="diag-error" id="chart-retention-error" hidden></div>
+  </div>
+
+  {# Row 2: interval distribution + ease distribution #}
+  <div class="diag-card" id="chart-interval-card">
+    <div class="diag-card-header">
+      <h3 class="card-title diag-card-title">Interval Distribution</h3>
+      <span class="diag-card-subtitle">Review cards (queue=2) by interval bucket</span>
+    </div>
+    <div class="diag-chart-wrap diag-chart-bar">
+      <canvas id="chart-interval" aria-label="Interval distribution histogram"></canvas>
+    </div>
+    <div class="diag-empty" id="chart-interval-empty" hidden>No review cards with recorded intervals.</div>
+    <div class="diag-error" id="chart-interval-error" hidden></div>
+  </div>
+
+  <div class="diag-card" id="chart-ease-card">
+    <div class="diag-card-header">
+      <h3 class="card-title diag-card-title">Ease / Difficulty Distribution</h3>
+      <span class="diag-card-subtitle">SM-2 ease factor for review cards</span>
+    </div>
+    <div class="diag-chart-wrap diag-chart-bar">
+      <canvas id="chart-ease" aria-label="Ease factor distribution"></canvas>
+    </div>
+    <div class="diag-fsrs-note" id="diag-fsrs-note" hidden></div>
+    <div class="diag-empty" id="chart-ease-empty" hidden>No ease data for review cards.</div>
+    <div class="diag-error" id="chart-ease-error" hidden></div>
+  </div>
+
+  {# Row 3: future due + reviews by day #}
+  <div class="diag-card diag-card-wide" id="chart-future-due-card">
+    <div class="diag-card-header">
+      <h3 class="card-title diag-card-title">Future Due</h3>
+      <span class="diag-card-subtitle">Upcoming review load forecast (time-range)</span>
+    </div>
+    <div class="diag-chart-wrap diag-chart-bar-wide">
+      <canvas id="chart-future-due" aria-label="Future due cards by day"></canvas>
+    </div>
+    <div class="diag-empty" id="chart-future-due-empty" hidden>No cards due in this period.</div>
+    <div class="diag-error" id="chart-future-due-error" hidden></div>
+  </div>
+
+  <div class="diag-card diag-card-wide" id="chart-reviews-card">
+    <div class="diag-card-header">
+      <h3 class="card-title diag-card-title">Reviews by Day</h3>
+      <span class="diag-card-subtitle">
+        Daily repetitions (time-range) —
+        <span class="diag-legend-reps">reps</span> = all repetitions (Anki-consistent);
+        <span class="diag-legend-reviews">reviews</span> = graduated-card reviews only
+      </span>
+    </div>
+    <div class="diag-chart-wrap diag-chart-bar-wide">
+      <canvas id="chart-reviews" aria-label="Daily reviews and reps"></canvas>
+    </div>
+    <div class="diag-empty" id="chart-reviews-empty" hidden>No review data for this period.</div>
+    <div class="diag-error" id="chart-reviews-error" hidden></div>
+  </div>
+
+  {# Row 4: added by day + time spent #}
+  <div class="diag-card diag-card-wide" id="chart-added-card">
+    <div class="diag-card-header">
+      <h3 class="card-title diag-card-title">Cards Added by Day</h3>
+      <span class="diag-card-subtitle">Daily card creation count (time-range)</span>
+    </div>
+    <div class="diag-chart-wrap diag-chart-bar-wide">
+      <canvas id="chart-added" aria-label="Cards added per day"></canvas>
+    </div>
+    <div class="diag-empty" id="chart-added-empty" hidden>No cards added in this period.</div>
+    <div class="diag-error" id="chart-added-error" hidden></div>
+  </div>
+
+  <div class="diag-card diag-card-wide" id="chart-time-card">
+    <div class="diag-card-header">
+      <h3 class="card-title diag-card-title">Time Spent</h3>
+      <span class="diag-card-subtitle">Daily study time (time-range)</span>
+    </div>
+    <div id="diag-time-summary" class="diag-time-summary" hidden></div>
+    <div class="diag-chart-wrap diag-chart-bar-wide">
+      <canvas id="chart-time" aria-label="Study time per day"></canvas>
+    </div>
+    <div class="diag-empty" id="chart-time-empty" hidden>No study time recorded for this period.</div>
+    <div class="diag-error" id="chart-time-error" hidden></div>
+  </div>
+
+</div>{# /diag-grid #}
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='admin/vendor/chart.min.js') }}"></script>
+<script src="{{ url_for('static', filename='admin/diagnostics.js') }}"></script>
+{% endblock %}

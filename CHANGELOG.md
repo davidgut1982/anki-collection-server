@@ -7,6 +7,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — A9: Diagnostics dashboard (feat/admin-actions) (CHECKPOINT)
+
+#### GET /admin/diagnostics — Diagnostics Dashboard
+
+New page at `/admin/diagnostics` (token-gated, added to base nav as active
+link replacing placeholder span; dashboard panel marked live with link).
+Renders a static shell; all stat data is fetched client-side via `acsInvoke`.
+
+**Chart.js vendored locally**
+
+Chart.js **4.4.9** (UMD minified) is downloaded into
+`static/admin/vendor/chart.min.js` (206 944 bytes).  The page loads it via:
+
+```html
+<script src="{{ url_for('static', filename='admin/vendor/chart.min.js') }}"></script>
+```
+
+No CDN is used; the sidecar works fully offline/internal.
+
+**Header strip — collection summary**
+
+A summary bar at the top of the page shows (via parallel `acsInvoke` calls):
+total cards, note count (from `/health`), new/learning/review breakdown
+(from `statCardCounts`), and collection status.  Loaded independently from the
+charts; best-effort (missing fields gracefully omitted).
+
+**Time-range selector**
+
+A dropdown (30 / 90 / 365 days) controls the `days` parameter sent to all
+time-range-aware stat actions.  Changing the selection or clicking Refresh
+re-loads all charts in parallel.
+
+**8 charts wired to A5 stat actions**
+
+| Chart | Action | Chart type | Notes |
+|-------|--------|------------|-------|
+| Card Counts | `statCardCounts` | Doughnut | new/learning/review/suspended/buried; total label |
+| True Retention | `statTrueRetention` | Bar + table | young/mature/overall pass/total/%; time-range |
+| Interval Distribution | `statIntervalDistribution` | Bar histogram | 7 bucket labels; no time-range param |
+| Ease/Difficulty | `statEaseDistribution` | Bar | SM-2 factor buckets; `fsrs_note` shown if present |
+| Future Due | `statFutureDue` | Bar forecast | day_offset → count; time-range |
+| Reviews by Day | `statReviewsByDay` | Grouped bar | both `reps` (all) and `reviews` (type=1); time-range |
+| Cards Added by Day | `statAddedByDay` | Bar | daily card-creation count; time-range |
+| Time Spent | `statTimeSpent` | Bar (minutes) | per-day bars; totalMs + avgMsPerRep summary strip |
+
+**Per-chart error isolation**
+
+Each loader is independently wrapped in `try/catch` around its `acsInvoke`
+call and run via `Promise.allSettled`.  A failure in one stat action renders
+that chart's `.diag-error` banner and does not prevent any other chart from
+loading.  Loading states use the canvas placeholder while data is in-flight.
+Empty-data states (all-zero results) show a `.diag-empty` banner with a
+"no data" message per chart.
+
+**New files**
+
+- `templates/admin/diagnostics.html` — Jinja2 template extending
+  `admin/base.html`.  Contains 8 `<canvas>` elements, the summary strip, and
+  the time-range selector.
+- `static/admin/diagnostics.js` — ~390 LOC dependency-free vanilla ES5/ES2020.
+  Defines independent loader functions for each chart; `loadAll()` runs all via
+  `Promise.allSettled` for full concurrency.
+- `static/admin/vendor/chart.min.js` — Chart.js 4.4.9 UMD bundle (vendored;
+  206 944 bytes; downloaded from cdn.jsdelivr.net/npm/chart.js@4.4.9).
+
+**Modified files**
+
+- `src/admin/routes.py`: added `GET /admin/diagnostics` route; docstring
+  updated to include A9.
+- `templates/admin/base.html`: "Diagnostics" nav replaced from placeholder
+  `<span class="nav-placeholder">` to active `<a>` link with active-class logic.
+- `templates/admin/index.html`: Database & Media and Diagnostics dashboard
+  panels both marked live with links.
+- `static/admin/admin.css`: A9 diagnostics styles appended (~170 LOC) —
+  responsive 2-column grid, chart cards, summary strip, empty/error states,
+  retention table, FSRS note, time summary.
+- `README.md`: `/admin/diagnostics` added to admin pages table.
+
+**Tests: `tests/test_admin_diagnostics_ui.py` — 17 tests, all pass, 0.28 s**
+
+- `TestDiagnosticsAuthGate` (4): valid token → 200; no token → 302/401; no
+  ADMIN_TOKEN → 503; wrong token → 302/401.
+- `TestDiagnosticsRoute` (9): page title "Diagnostics"; time-range selector
+  present; all 8 chart canvas IDs present; diagnostics.js loaded; vendored
+  chart.min.js referenced; nav link active; summary strip present; refresh
+  button present; cookie auth grants access.
+- `TestVendoredChartJs` (4): GET static path → 200; non-empty (>10 KB);
+  JavaScript content-type; file exists on disk at expected path.
+
+Total test count: 353 → 370 (all pass, 3 skipped — FSRS optimizer, expected).
+`ruff check src/ tests/test_admin_diagnostics_ui.py`: clean.
+
+---
+
 ### Added — A8: Database & Media health panel (feat/admin-actions)
 
 #### GET /admin/maintenance — Database & Media Health

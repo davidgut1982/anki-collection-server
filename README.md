@@ -108,6 +108,7 @@ navigation without re-entering the token on each page.
 | `GET /admin/browse` | Card/Note Browser: search, paginated table, bulk actions, note editor, Find & Replace, Find Duplicates |
 | `GET /admin/scheduling` | Scheduling: deck options presets, FSRS enable/configure, compute optimal retention |
 | `GET /admin/maintenance` | Database & Media: check database, find/remove empty cards, optimize, fix integrity, check/delete unused media |
+| `GET /admin/diagnostics` | Diagnostics: 8 Chart.js charts (card counts, retention, intervals, ease, future due, reviews/day, added/day, time spent) |
 | `POST /admin/api/invoke` | Token-gated AnkiConnect proxy used by all admin pages (not for direct browser use) |
 
 #### /admin/maintenance

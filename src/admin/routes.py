@@ -1,5 +1,6 @@
 """
-Admin blueprint routes -- A1 scaffold + A6 card/note browser + A7 scheduling.
+Admin blueprint routes -- A1 scaffold + A6 card/note browser + A7 scheduling +
+A8 DB/media health + A9 diagnostics dashboard.
 
 Routes implemented
 ------------------
@@ -10,6 +11,8 @@ GET  /admin/logout      -- Clear the ``token`` cookie; redirect to /admin/login.
 POST /admin/api/invoke  -- Token-gated AnkiConnect action proxy (A6).
 GET  /admin/browse      -- Card/note browser + triage UI (A6).
 GET  /admin/scheduling  -- Deck options + FSRS scheduling panel (A7).
+GET  /admin/maintenance -- Database & media health panel (A8).
+GET  /admin/diagnostics -- Diagnostics dashboard with Chart.js charts (A9).
 
 Auth guard
 ----------
@@ -340,3 +343,26 @@ def maintenance() -> Any:
     No collection access at render time.
     """
     return render_template("admin/maintenance.html")
+
+
+# ---------------------------------------------------------------------------
+# A9: Diagnostics dashboard
+# ---------------------------------------------------------------------------
+
+@admin_bp.get("/diagnostics")
+def diagnostics() -> Any:
+    """Diagnostics dashboard with Chart.js charts.
+
+    Renders a static shell; all stat data is fetched client-side via
+    acsInvoke() from the A5 stats actions (statCardCounts, statTrueRetention,
+    statIntervalDistribution, statEaseDistribution, statFutureDue,
+    statReviewsByDay, statAddedByDay, statTimeSpent).
+
+    Chart.js 4.4.9 is loaded from the locally-vendored
+    static/admin/vendor/chart.min.js (no CDN dependency — sidecar works
+    offline/internal).
+
+    Error isolation: each chart is independently wrapped in try/catch so a
+    single failing stat action does not prevent the other charts from rendering.
+    """
+    return render_template("admin/diagnostics.html")

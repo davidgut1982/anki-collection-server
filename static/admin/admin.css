@@ -966,3 +966,210 @@ body {
   color: var(--text-muted);
   font-size: 12px;
 }
+
+/* ================================================================
+   A9: Diagnostics dashboard styles
+   ================================================================ */
+
+/* ---- Page header row ---- */
+.diag-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.diag-time-range-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.diag-range-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.diag-range-select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  background: var(--surface);
+}
+.diag-range-select:focus { outline: none; border-color: var(--accent); }
+
+.diag-refresh-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* ---- Summary strip ---- */
+.diag-summary-strip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 12px 20px;
+  margin-bottom: 20px;
+}
+
+.diag-summary-loading {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.diag-summary-items {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.diag-summary-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 60px;
+}
+.diag-summary-item strong { font-size: 18px; font-weight: 600; }
+.diag-summary-sub { font-size: 11px; color: var(--text-muted); }
+
+.diag-summary-sep { color: var(--border); font-size: 20px; line-height: 1; }
+
+/* ---- Responsive chart grid ---- */
+.diag-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+}
+
+/* Wide cards span both columns */
+.diag-card-wide {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 768px) {
+  .diag-grid { grid-template-columns: 1fr; }
+  .diag-card-wide { grid-column: unset; }
+}
+
+/* ---- Chart cards ---- */
+.diag-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+}
+
+.diag-card-header {
+  margin-bottom: 14px;
+}
+.diag-card-title {
+  margin-bottom: 2px;
+}
+.diag-card-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* ---- Canvas sizes ---- */
+.diag-chart-wrap {
+  position: relative;
+  flex: 1;
+}
+
+.diag-chart-doughnut { height: 220px; }
+.diag-chart-bar       { height: 200px; }
+.diag-chart-bar-wide  { height: 200px; }
+
+/* ---- Empty / error states ---- */
+.diag-empty,
+.diag-error {
+  padding: 20px;
+  text-align: center;
+  font-size: 13px;
+  border-radius: var(--radius);
+  margin-top: 8px;
+}
+
+.diag-empty {
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px dashed var(--border);
+}
+
+.diag-error {
+  color: var(--danger);
+  background: #fff0f0;
+  border: 1px solid #fca5a5;
+}
+
+/* ---- Retention table ---- */
+.diag-retention-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-top: 12px;
+}
+.diag-retention-table th,
+.diag-retention-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+}
+.diag-retention-table th { font-weight: 600; color: var(--text-muted); text-align: left; }
+.diag-retention-table td:first-child { text-align: left; }
+
+/* ---- FSRS note ---- */
+.diag-fsrs-note {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: #fffde7;
+  border: 1px solid #e3b341;
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  line-height: 1.5;
+}
+
+/* ---- Card counts total label ---- */
+.diag-total-label {
+  margin-top: 8px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+/* ---- Time summary ---- */
+.diag-time-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.diag-time-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.diag-time-stat strong { font-size: 16px; font-weight: 600; }
+
+/* ---- Legend hints in subtitle ---- */
+.diag-legend-reps   { color: var(--accent); font-weight: 600; }
+.diag-legend-reviews { color: var(--ok); font-weight: 600; }

@@ -60,13 +60,14 @@
       <strong><a href="{{ url_for('admin.scheduling') }}">Scheduling</a></strong> (A7) &mdash; Edit deck options presets, configure FSRS
       desired retention, enable FSRS, and compute optimal retention.
     </li>
-    <li class="panel-item panel-pending">
-      <strong>Database &amp; Media</strong> (A8) — Check media consistency,
+    <li class="panel-item panel-live">
+      <strong><a href="{{ url_for('admin.maintenance') }}">Database &amp; Media</a></strong> (A8) &mdash; Check media consistency,
       run the orphan cleaner, and initiate a pre-backup snapshot.
     </li>
-    <li class="panel-item panel-pending">
-      <strong>Diagnostics</strong> (A9) — Live review-rate charts, revlog
-      heatmap, and collection statistics (Chart.js).
+    <li class="panel-item panel-live">
+      <strong><a href="{{ url_for('admin.diagnostics') }}">Diagnostics</a></strong> (A9) &mdash; Collection statistics charts: card counts,
+      true retention, interval distribution, ease distribution, future due forecast,
+      reviews by day, added by day, and time spent. Powered by Chart.js (vendored).
     </li>
   </ul>
 </section>

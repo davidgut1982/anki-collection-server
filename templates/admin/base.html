@@ -26,7 +26,9 @@
         <a href="{{ url_for('admin.maintenance') }}" class="nav-link{% if request.endpoint == 'admin.maintenance' %} active{% endif %}">
           DB &amp; Media
         </a>
-        <span class="nav-link nav-placeholder" title="Coming in A9">Diagnostics</span>
+        <a href="{{ url_for('admin.diagnostics') }}" class="nav-link{% if request.endpoint == 'admin.diagnostics' %} active{% endif %}">
+          Diagnostics
+        </a>
         <a href="{{ url_for('admin.logout') }}" class="nav-link nav-logout">Logout</a>
       </nav>
     </div>
