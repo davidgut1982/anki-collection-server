@@ -306,9 +306,19 @@ class TestInvokeDispatch:
     def test_invoke_with_cookie_auth(self) -> None:
         """The token cookie (set by /admin/login) also grants access to invoke."""
         with _client(_TOKEN) as c:
+            # Obtain a real session cookie via the login route -- this is the
+            # path a browser actually takes and it avoids relying on the
+            # test-client set_cookie() API which changed between Flask 2.x and
+            # 3.x (positional server_name argument removed in 3.1).
+            login_resp = c.post("/admin/login", data={"token": _TOKEN})
+            assert login_resp.status_code in (200, 302), (
+                f"Login should succeed, got {login_resp.status_code}"
+            )
+
+            # The cookie is now in the test client's cookie jar.
+            # The version action does not hit the collection, but we still patch
+            # get_col for consistency with the other dispatch tests.
             with patch("src.collection.get_col") as _:
-                # Set the cookie as if the user had logged in
-                c.set_cookie("localhost", "token", _TOKEN)
                 resp = c.post(
                     "/admin/api/invoke",
                     json={"action": "version", "params": {}},

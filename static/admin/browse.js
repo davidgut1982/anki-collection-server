@@ -159,10 +159,34 @@
   // Confirm dialog (promise-based)
   // -------------------------------------------------------------------------
 
-  function confirm(title, body, okLabel = "Confirm", okClass = "btn btn-danger") {
+  /**
+   * Show a confirmation dialog.
+   *
+   * @param {string} title      - Plain-text dialog title.
+   * @param {string} body       - Plain-text message body.  Displayed via
+   *                              textContent so no HTML interpretation occurs.
+   *                              If rich markup is genuinely needed, build a
+   *                              DocumentFragment from escaped parts and pass
+   *                              it as the `bodyNode` option instead.
+   * @param {string} okLabel    - Label for the confirm button.
+   * @param {string} okClass    - CSS class(es) for the confirm button.
+   * @param {{bodyNode?: Node}} [opts] - Advanced: pass a pre-built DOM node as
+   *                              the dialog body.  The node MUST be constructed
+   *                              from server-controlled or already-escaped data.
+   */
+  function confirm(title, body, okLabel = "Confirm", okClass = "btn btn-danger", opts = {}) {
     return new Promise((resolve) => {
       confirmTitle.textContent = title;
-      confirmBody.innerHTML = body;
+      // Use textContent to prevent XSS: never put raw user data into innerHTML.
+      // For the handful of callers that need bold counts/names we accept a
+      // pre-built DOM node via opts.bodyNode (must be constructed safely by the
+      // caller).
+      confirmBody.innerHTML = "";
+      if (opts.bodyNode) {
+        confirmBody.appendChild(opts.bodyNode);
+      } else {
+        confirmBody.textContent = body;
+      }
       confirmOk.textContent = okLabel;
       confirmOk.className = okClass;
       show(confirmOverlay);
@@ -555,7 +579,7 @@
       case "suspend":
         ok = await confirm(
           "Suspend cards",
-          `Suspend <strong>${n}</strong> card(s)? They will not appear in reviews until unsuspended.`,
+          `Suspend ${n} card(s)? They will not appear in reviews until unsuspended.`,
           "Suspend"
         );
         if (!ok) return;
@@ -566,7 +590,7 @@
       case "unsuspend":
         ok = await confirm(
           "Unsuspend cards",
-          `Unsuspend <strong>${n}</strong> card(s)?`,
+          `Unsuspend ${n} card(s)?`,
           "Unsuspend", "btn btn-primary"
         );
         if (!ok) return;
@@ -577,7 +601,7 @@
       case "bury":
         ok = await confirm(
           "Bury cards",
-          `Bury <strong>${n}</strong> card(s) until tomorrow?`,
+          `Bury ${n} card(s) until tomorrow?`,
           "Bury"
         );
         if (!ok) return;
@@ -588,7 +612,7 @@
       case "unbury":
         ok = await confirm(
           "Unbury cards",
-          `Unbury <strong>${n}</strong> card(s)?`,
+          `Unbury ${n} card(s)?`,
           "Unbury", "btn btn-primary"
         );
         if (!ok) return;
@@ -608,7 +632,7 @@
         if (!input) return;
         ok = await confirm(
           "Set flag",
-          `Set flag <strong>${input.flag}</strong> on <strong>${n}</strong> card(s)?`,
+          `Set flag ${input.flag} on ${n} card(s)?`,
           "Set flag", "btn btn-primary"
         );
         if (!ok) return;
@@ -636,7 +660,7 @@
         if (!input) return;
         ok = await confirm(
           "Change deck",
-          `Move <strong>${n}</strong> card(s) to deck <strong>${esc(input.deck)}</strong>?`,
+          `Move ${n} card(s) to deck "${input.deck}"?`,
           "Move", "btn btn-primary"
         );
         if (!ok) return;
@@ -656,7 +680,7 @@
         if (!input) return;
         ok = await confirm(
           "Set due date",
-          `Set due date to <strong>${esc(input.days)}</strong> for <strong>${n}</strong> card(s)?`,
+          `Set due date to "${input.days}" for ${n} card(s)?`,
           "Set due", "btn btn-primary"
         );
         if (!ok) return;
@@ -667,9 +691,8 @@
       case "forgetCards":
         ok = await confirm(
           "Forget cards (RESET)",
-          `<strong>Reset ${n} card(s) to new status?</strong><br>` +
-          "This removes all review history and resets intervals to zero. " +
-          "This action cannot be undone without a backup.",
+          `Reset ${n} card(s) to new status? This removes all review history ` +
+          "and resets intervals to zero. This action cannot be undone without a backup.",
           "Reset cards"
         );
         if (!ok) return;
@@ -689,7 +712,7 @@
         if (!input) return;
         ok = await confirm(
           "Reposition new cards",
-          `Reposition <strong>${n}</strong> new card(s) starting at <strong>${esc(input.start)}</strong>?`,
+          `Reposition ${n} new card(s) starting at ${input.start}?`,
           "Reposition", "btn btn-primary"
         );
         if (!ok) return;
@@ -710,7 +733,7 @@
         if (!input || !input.tags.trim()) return;
         ok = await confirm(
           "Add tags",
-          `Add tags <strong>${esc(input.tags)}</strong> to <strong>${noteIds.length}</strong> note(s)?`,
+          `Add tags "${input.tags}" to ${noteIds.length} note(s)?`,
           "Add", "btn btn-primary"
         );
         if (!ok) return;
@@ -725,7 +748,7 @@
         if (!input || !input.tags.trim()) return;
         ok = await confirm(
           "Remove tags",
-          `Remove tags <strong>${esc(input.tags)}</strong> from <strong>${noteIds.length}</strong> note(s)?`,
+          `Remove tags "${input.tags}" from ${noteIds.length} note(s)?`,
           "Remove", "btn btn-danger"
         );
         if (!ok) return;
@@ -738,15 +761,13 @@
         // Double-confirm for destructive delete
         const first = await confirm(
           "Delete notes",
-          `Permanently delete <strong>${nCount} note(s)</strong> and all their cards?<br>` +
-          "<strong>This cannot be undone.</strong>",
+          `Permanently delete ${nCount} note(s) and all their cards? This cannot be undone.`,
           "Delete permanently"
         );
         if (!first) return;
         const second = await confirm(
           "CONFIRM DELETE",
-          `Are you absolutely sure you want to permanently delete ` +
-          `<strong>${nCount} note(s)</strong>?<br>` +
+          `Are you absolutely sure you want to permanently delete ${nCount} note(s)? ` +
           "There is no undo. All cards for these notes will also be deleted.",
           "Yes, delete permanently"
         );
@@ -889,13 +910,13 @@
     if (!S.editorNoteId) return;
     const ok = await confirm(
       "Delete note",
-      `Permanently delete note <strong>${S.editorNoteId}</strong> and all its cards?`,
+      `Permanently delete note ${S.editorNoteId} and all its cards?`,
       "Delete"
     );
     if (!ok) return;
     const second = await confirm(
       "CONFIRM DELETE",
-      `Are you sure you want to permanently delete this note? This cannot be undone.`,
+      "Are you sure you want to permanently delete this note? This cannot be undone.",
       "Yes, delete"
     );
     if (!second) return;
@@ -947,9 +968,9 @@
 
     const ok = await confirm(
       "Find & Replace",
-      `Replace <strong>${esc(searchVal)}</strong> with <strong>${esc(replaceVal)}</strong> ` +
-      `in ${field ? `field "<strong>${esc(field)}</strong>"` : "all fields"} ` +
-      `across <strong>${noteIds.length}</strong> note(s) on the current page?`,
+      `Replace "${searchVal}" with "${replaceVal}" ` +
+      `in ${field ? `field "${field}"` : "all fields"} ` +
+      `across ${noteIds.length} note(s) on the current page?`,
       "Apply", "btn btn-primary"
     );
     if (!ok) return;
@@ -1007,7 +1028,7 @@
             `<li>
               <span class="dupe-value">${esc(value.slice(0, 60))}${value.length > 60 ? "..." : ""}</span>
               &mdash; ${notes.length} notes
-              <a href="#" class="dupe-search-link" data-query="dupe:${esc(field)}">filter</a>
+              <a href="#" class="dupe-search-link" data-query="dupe:${field}">filter</a>
             </li>`
           ).join("") +
           "</ul>";

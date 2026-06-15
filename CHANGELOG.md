@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Code Critic remediation: browse/invoke (feat/admin-actions)
+
+#### HIGH — `test_invoke_with_cookie_auth` test bug (`tests/test_admin_browse.py`)
+
+- The test called `c.set_cookie("localhost", "token", _TOKEN)` using the old
+  Werkzeug positional-domain API.  Flask 3.1 / Werkzeug 3.x removes the
+  positional `server_name` argument; calling `set_cookie(key, value)` on that
+  version silently stores the cookie against the wrong domain, so the assertion
+  was never reached.
+- Fix: replaced `set_cookie` with the real login flow — `c.post("/admin/login",
+  data={"token": _TOKEN})` — which works on all Flask versions and authentically
+  exercises the path a browser takes.  The subsequent `POST /admin/api/invoke`
+  now reaches the auth check and passes with the session cookie.
+- Confirmed: `TestInvokeDispatch::test_invoke_with_cookie_auth` now executes and
+  passes (`PASSED [ 64%]`).
+
+#### MEDIUM — XSS hardening on `confirm()` dialog (`static/admin/browse.js`)
+
+- `confirmBody.innerHTML = body` in the `confirm()` helper permitted HTML
+  injection if any future caller passed unescaped user data as the message body.
+- Fix: `confirm()` now sets `confirmBody.textContent = body`, which HTML-encodes
+  all characters and prevents any markup from being interpreted.  The `opts.bodyNode`
+  escape hatch is provided for callers that need pre-built DOM nodes (must be
+  constructed from safe data by the caller).
+- All 11 `confirm()` call sites converted from `innerHTML`-style template
+  literals with `<strong>` / `<br>` tags to plain-text messages; user-supplied
+  values (tags, deck names, day specs) appear directly via `textContent` — no
+  `esc()` call needed in the message string because `textContent` never
+  interprets HTML.
+- The now-unused `esc()` calls in the `changeDeck`, `setDueDate`, `addTags`,
+  `removeTags`, `reposition`, and `fnrApply` callers were removed.
+
+#### LOW — double-encoding on `data-query` attribute (`static/admin/browse.js` ~line 1010)
+
+- `data-query="dupe:${esc(field)}"` HTML-encoded the field name, which was then
+  double-decoded when `a.dataset.query` was written into `searchInput.value`.
+  Field names are server-controlled identifiers (never user-supplied text in this
+  path), so no encoding is needed.
+- Fix: changed to `data-query="dupe:${field}"` — the raw field string is stored
+  in the attribute and read back without double-decode artefacts.
+
+323 passed, 3 skipped.  `ruff check src/ tests/test_admin_browse.py`: clean.
+
 ### Added — A6: Card/Note Browser + Triage admin page (feat/admin-actions)
 
 #### POST /admin/api/invoke -- token-gated AnkiConnect proxy
