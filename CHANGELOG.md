@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — A7: Scheduling admin page (feat/admin-actions)
+
+#### GET /admin/scheduling — Deck Options + FSRS Panel
+
+New page at `/admin/scheduling` (token-gated, added to base nav, dashboard
+panel marked live).  Renders a static shell; all data is fetched client-side
+via `acsInvoke` through the existing `POST /admin/api/invoke` proxy — no
+collection access at render time.
+
+**Preset selector**
+
+- `getDeckConfigs` is called on page load to populate a dropdown of all
+  configuration presets (name + id).
+- Selecting a preset populates the Deck Options form and the FSRS panel.
+- Auto-selects the only preset when the collection has exactly one (common case).
+
+**Deck Options form (read-modify-write)**
+
+Fields grouped into New Cards / Reviews / Lapses fieldsets, bound to the
+confirmed camelCase keys from the deck config dict:
+
+| Field | Config key |
+|-------|-----------|
+| New cards per day | `new.perDay` |
+| Learning steps | `new.delays` (space-separated min input → list) |
+| Graduating interval | `new.ints[1]` |
+| Easy interval | `new.ints[0]` |
+| Bury new siblings | `new.bury` |
+| Reviews per day | `rev.perDay` |
+| Max interval | `rev.maxIvl` |
+| Interval modifier | `rev.ivlFct` (stored as fraction; displayed as %) |
+| Bury review siblings | `rev.bury` |
+| Relearn steps | `lapse.delays` |
+| Leech threshold | `lapse.leechFails` |
+| Leech action | `lapse.leechAction` (0=suspend/1=tag dropdown) |
+| Min interval after lapse | `lapse.minInt` |
+| New interval after lapse | `lapse.mult` (stored as fraction; displayed as %) |
+
+Read-modify-write: the full raw config dict from `getDeckConfigs` is stored
+in memory. On save, a shallow copy of the dict + shallow copies of only the
+three mutated sub-dicts (`new`, `rev`, `lapse`) are built; all other top-level
+keys (FSRS params, `id`, `name`, `mod`, `usn`, metadata) are preserved verbatim.
+The mutated dict is sent to `updateDeckConfig`. Client-side validation runs
+before the confirm dialog and the server re-validates on receipt.
+
+Save shows a confirm dialog: "This changes scheduling for ALL decks using preset
+`<name>`."  After a successful save, the in-memory reference is updated so
+subsequent saves stay consistent.
+
+**FSRS panel**
+
+- `isFsrsEnabled` → enabled/disabled badge; Enable FSRS button or "active" note.
+- **Enable FSRS** (`enableFsrs`, optimize=true): confirm dialog with warning
+  about optimizer affecting all devices; re-loads the FSRS panel on success.
+- **Desired retention**: current value from `getFsrsParams`; editable (0.70–0.97);
+  Save button → confirm → `setDesiredRetention`.
+- **FSRS parameters**: read-only grid of the 21-float weight vector (or empty note
+  if no params stored).
+- **Compute Optimal Retention**: `computeOptimalRetention` → displays suggested
+  value or structured error note; best-effort.
+- **Prominent caveat banner**: "this headless server cannot auto-reschedule existing
+  cards when FSRS/params change (desktop-only operation). New scheduling applies as
+  cards are reviewed." (A0-documented Qt-only limitation; no fake reschedule button).
+
+**New files**
+
+- `templates/admin/scheduling.html` — Jinja2 template extending `admin/base.html`.
+- `static/admin/scheduling.js` — ~380 LOC dependency-free vanilla ES2020.
+
+**Modified files**
+
+- `src/admin/routes.py`: added `GET /admin/scheduling` route + docstring update.
+- `templates/admin/base.html`: "Scheduling" nav replaced from placeholder `<span>`
+  to active `<a>` link.
+- `templates/admin/index.html`: Scheduling panel marked live with link.
+- `static/admin/admin.css`: A7 scheduling styles appended (~130 LOC).
+- `README.md`: `/admin/scheduling` added to admin pages table + section.
+
+**Tests: `tests/test_admin_scheduling_ui.py` — 15 tests, all pass, 0.28 s**
+
+- `TestSchedulingAuthGate` (3): without token -> 302/401; no ADMIN_TOKEN -> 503;
+  wrong token -> 302/401.
+- `TestSchedulingRoute` (12): valid token -> 200; page title contains
+  "Scheduling"; preset selector present; deck-options form present; FSRS card
+  present; caveat banner present + mentions headless/desktop; Enable FSRS button
+  present; desired-retention input present; compute-retention button present;
+  scheduling.js loaded; nav link active; cookie auth grants access.
+
+Total test count: 323 → 338 (all pass, 3 skipped — FSRS optimizer, expected).
+`ruff check src/ tests/test_admin_scheduling_ui.py`: clean.
+
 ### Fixed — Code Critic remediation: browse/invoke (feat/admin-actions)
 
 #### HIGH — `test_invoke_with_cookie_auth` test bug (`tests/test_admin_browse.py`)

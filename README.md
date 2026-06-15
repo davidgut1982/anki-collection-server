@@ -106,7 +106,40 @@ navigation without re-entering the token on each page.
 |-------|-------------|
 | `GET /admin` | Dashboard: collection health summary, links to panels |
 | `GET /admin/browse` | Card/Note Browser: search, paginated table, bulk actions, note editor, Find & Replace, Find Duplicates |
+| `GET /admin/scheduling` | Scheduling: deck options presets, FSRS enable/configure, compute optimal retention |
 | `POST /admin/api/invoke` | Token-gated AnkiConnect proxy used by all admin pages (not for direct browser use) |
+
+#### /admin/scheduling
+
+Edit deck configuration presets and manage FSRS settings.
+
+**Deck Options (per preset)**
+
+Select a preset from the dropdown to view and edit its scheduling parameters:
+
+- New cards: per-day limit, learning steps, graduating/easy intervals, bury siblings
+- Reviews: per-day limit, max interval, interval modifier, bury siblings
+- Lapses: relearn steps, leech threshold/action, min interval, new interval %
+
+Changes are saved via `updateDeckConfig` (read-modify-write: the full config dict
+is fetched, mutated, and sent back — no fields are lost). All saves show a confirm
+dialog noting the preset name.
+
+**FSRS Panel**
+
+- Shows whether FSRS is enabled (`isFsrsEnabled`).
+- **Enable FSRS** button: runs `enableFsrs(optimize=true)`, which optimizes
+  parameters from your full review history. Confirm dialog shown.
+- **Desired Retention**: displays current value (`getFsrsParams`), editable
+  (0.70–0.97), saved via `setDesiredRetention`. Confirm dialog shown.
+- **FSRS Parameters**: read-only display of the 21-float weight vector.
+- **Compute Optimal Retention**: calls `computeOptimalRetention` and displays
+  the suggested value (best-effort; shows an error note if insufficient data).
+
+> **Headless caveat:** this server cannot auto-reschedule existing cards when
+> FSRS parameters change (that requires Anki Desktop / Qt runtime). New
+> scheduling takes effect as cards are reviewed going forward. To reschedule
+> existing cards, open the collection in Anki Desktop after syncing.
 
 #### /admin/browse
 

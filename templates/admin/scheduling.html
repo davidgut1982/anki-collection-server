@@ -1,0 +1,250 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Scheduling{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2 class="page-title">Scheduling</h2>
+</div>
+
+{# ------------------------------------------------------------------ #}
+{# FSRS caveat banner                                                  #}
+{# ------------------------------------------------------------------ #}
+<div class="sched-caveat-banner" id="fsrs-caveat-banner">
+  <strong>Note:</strong> this headless server cannot auto-reschedule existing
+  cards when FSRS parameters or settings change (that is a desktop-only
+  operation requiring the Qt runtime). New scheduling applies as cards are
+  reviewed. To reschedule existing cards, open the collection in Anki desktop
+  after syncing.
+</div>
+
+{# ------------------------------------------------------------------ #}
+{# Preset selector                                                     #}
+{# ------------------------------------------------------------------ #}
+<section class="card sched-preset-card">
+  <h3 class="card-title">Deck Options Preset</h3>
+  <div class="sched-preset-row">
+    <label class="sched-label" for="preset-select">Preset</label>
+    <select id="preset-select" class="sched-select">
+      <option value="">Loading presets&hellip;</option>
+    </select>
+    <span class="sched-preset-id" id="preset-id-label"></span>
+  </div>
+  <p class="sched-preset-hint" id="preset-hint" hidden>
+    Changes apply to <strong>all decks</strong> using this preset.
+  </p>
+</section>
+
+{# ------------------------------------------------------------------ #}
+{# Deck options form                                                   #}
+{# ------------------------------------------------------------------ #}
+<section class="card sched-form-card" id="deck-options-card" hidden>
+  <h3 class="card-title">Deck Options — <span id="form-preset-name"></span></h3>
+
+  <form id="deck-options-form" autocomplete="off" novalidate>
+
+    {# New cards group #}
+    <fieldset class="sched-fieldset">
+      <legend class="sched-legend">New Cards</legend>
+
+      <div class="sched-row">
+        <label class="sched-label" for="new-per-day">New cards per day</label>
+        <input id="new-per-day" type="number" class="sched-input sched-input-sm"
+               min="0" max="9999" step="1" required />
+        <span class="sched-hint">Max new cards introduced each day</span>
+      </div>
+
+      <div class="sched-row">
+        <label class="sched-label" for="new-delays">Learning steps (min)</label>
+        <input id="new-delays" type="text" class="sched-input"
+               placeholder="e.g. 1 10" />
+        <span class="sched-hint">Space-separated minutes, e.g. <code>1 10</code></span>
+      </div>
+
+      <div class="sched-row">
+        <label class="sched-label" for="graduating-interval">Graduating interval (days)</label>
+        <input id="graduating-interval" type="number" class="sched-input sched-input-sm"
+               min="1" max="36500" step="1" required />
+        <span class="sched-hint">Interval after passing the last learning step (<code>new.ints[1]</code>)</span>
+      </div>
+
+      <div class="sched-row">
+        <label class="sched-label" for="easy-interval">Easy interval (days)</label>
+        <input id="easy-interval" type="number" class="sched-input sched-input-sm"
+               min="1" max="36500" step="1" required />
+        <span class="sched-hint">Interval when Easy is pressed on a new card (<code>new.ints[0]</code>)</span>
+      </div>
+
+      <div class="sched-row sched-row-check">
+        <label class="check-label">
+          <input id="bury-new" type="checkbox" />
+          Bury new siblings
+        </label>
+        <span class="sched-hint">Automatically bury siblings of new cards (<code>new.bury</code>)</span>
+      </div>
+    </fieldset>
+
+    {# Reviews group #}
+    <fieldset class="sched-fieldset">
+      <legend class="sched-legend">Reviews</legend>
+
+      <div class="sched-row">
+        <label class="sched-label" for="rev-per-day">Reviews per day</label>
+        <input id="rev-per-day" type="number" class="sched-input sched-input-sm"
+               min="0" max="99999" step="1" required />
+        <span class="sched-hint">Max reviews shown each day (<code>rev.perDay</code>)</span>
+      </div>
+
+      <div class="sched-row">
+        <label class="sched-label" for="rev-max-ivl">Maximum interval (days)</label>
+        <input id="rev-max-ivl" type="number" class="sched-input sched-input-sm"
+               min="1" max="36500" step="1" required />
+        <span class="sched-hint">Hard cap on review intervals (<code>rev.maxIvl</code>)</span>
+      </div>
+
+      <div class="sched-row">
+        <label class="sched-label" for="rev-ivl-fct">Interval modifier (%)</label>
+        <input id="rev-ivl-fct" type="number" class="sched-input sched-input-sm"
+               min="50" max="500" step="1" required />
+        <span class="sched-hint">Scale all review intervals; stored as fraction (<code>rev.ivlFct</code>)</span>
+      </div>
+
+      <div class="sched-row sched-row-check">
+        <label class="check-label">
+          <input id="bury-rev" type="checkbox" />
+          Bury review siblings
+        </label>
+        <span class="sched-hint">Automatically bury review siblings (<code>rev.bury</code>)</span>
+      </div>
+    </fieldset>
+
+    {# Lapses group #}
+    <fieldset class="sched-fieldset">
+      <legend class="sched-legend">Lapses</legend>
+
+      <div class="sched-row">
+        <label class="sched-label" for="lapse-delays">Relearn steps (min)</label>
+        <input id="lapse-delays" type="text" class="sched-input"
+               placeholder="e.g. 10" />
+        <span class="sched-hint">Space-separated minutes after a lapse (<code>lapse.delays</code>)</span>
+      </div>
+
+      <div class="sched-row">
+        <label class="sched-label" for="leech-fails">Leech threshold</label>
+        <input id="leech-fails" type="number" class="sched-input sched-input-sm"
+               min="1" max="99" step="1" required />
+        <span class="sched-hint">Lapses before card becomes a leech (<code>lapse.leechFails</code>)</span>
+      </div>
+
+      <div class="sched-row">
+        <label class="sched-label" for="leech-action">Leech action</label>
+        <select id="leech-action" class="sched-select sched-select-sm">
+          <option value="0">Suspend card</option>
+          <option value="1">Tag only</option>
+        </select>
+        <span class="sched-hint"><code>lapse.leechAction</code>: 0 = suspend, 1 = tag</span>
+      </div>
+
+      <div class="sched-row">
+        <label class="sched-label" for="lapse-min-int">Min interval after lapse (days)</label>
+        <input id="lapse-min-int" type="number" class="sched-input sched-input-sm"
+               min="1" max="9999" step="1" required />
+        <span class="sched-hint"><code>lapse.minInt</code></span>
+      </div>
+
+      <div class="sched-row">
+        <label class="sched-label" for="lapse-mult">New interval after lapse (%)</label>
+        <input id="lapse-mult" type="number" class="sched-input sched-input-sm"
+               min="0" max="100" step="1" required />
+        <span class="sched-hint">Interval multiplier on lapse, as percentage (<code>lapse.mult</code>)</span>
+      </div>
+    </fieldset>
+
+    <div class="sched-form-footer">
+      <button type="submit" class="btn btn-primary" id="save-deck-options-btn">
+        Save Deck Options
+      </button>
+      <span id="deck-options-status" class="sched-status"></span>
+    </div>
+  </form>
+</section>
+
+{# ------------------------------------------------------------------ #}
+{# FSRS panel                                                          #}
+{# ------------------------------------------------------------------ #}
+<section class="card sched-fsrs-card" id="fsrs-card" hidden>
+  <h3 class="card-title">FSRS (Free Spaced Repetition Scheduler)</h3>
+
+  {# FSRS enabled state #}
+  <div class="sched-fsrs-status-row" id="fsrs-status-row">
+    <span class="sched-label">FSRS status</span>
+    <span id="fsrs-status-badge" class="badge">checking&hellip;</span>
+  </div>
+
+  <div class="sched-fsrs-enable-row" id="fsrs-enable-row" hidden>
+    <button class="btn btn-warn" id="enable-fsrs-btn">Enable FSRS</button>
+    <span class="sched-hint">
+      Enables FSRS and optimizes parameters from your review history.
+      Affects scheduling on next sync for all devices.
+    </span>
+  </div>
+  <div class="sched-fsrs-enabled-note" id="fsrs-enabled-note" hidden>
+    <span class="sched-ok-text">FSRS is active.</span>
+    Re-running Enable FSRS is idempotent and will re-optimize weights.
+  </div>
+
+  {# Desired retention #}
+  <div class="sched-fsrs-section" id="fsrs-retention-section" hidden>
+    <h4 class="sched-subsection-title">Desired Retention</h4>
+    <div class="sched-row">
+      <label class="sched-label" for="desired-retention">Target retention</label>
+      <input id="desired-retention" type="number" class="sched-input sched-input-sm"
+             min="0.70" max="0.97" step="0.01"
+             placeholder="0.70 – 0.97" />
+      <button class="btn btn-sm btn-primary" id="save-retention-btn">Save</button>
+    </div>
+    <p class="sched-hint">
+      Allowed range 0.70–0.97. Higher = more reviews needed to reach target.
+    </p>
+    <span id="retention-status" class="sched-status"></span>
+  </div>
+
+  {# FSRS params read-only display #}
+  <div class="sched-fsrs-section" id="fsrs-params-section" hidden>
+    <h4 class="sched-subsection-title">FSRS Parameters (read-only)</h4>
+    <p class="sched-hint">21-float weight vector used by the scheduler. Set by the optimizer.</p>
+    <div id="fsrs-params-display" class="sched-params-display"></div>
+  </div>
+
+  {# Compute optimal retention #}
+  <div class="sched-fsrs-section" id="fsrs-optimal-section" hidden>
+    <h4 class="sched-subsection-title">Compute Optimal Retention</h4>
+    <p class="sched-hint">
+      Runs the FSRS simulator against your review history. May fail if the
+      collection has insufficient review data. Best-effort only.
+    </p>
+    <button class="btn btn-sm btn-outline" id="compute-retention-btn">
+      Compute Optimal Retention
+    </button>
+    <div id="optimal-retention-result" class="sched-optimal-result" hidden></div>
+  </div>
+</section>
+
+{# ------------------------------------------------------------------ #}
+{# Confirm dialog (shared with browse.js pattern)                     #}
+{# ------------------------------------------------------------------ #}
+<div class="modal-overlay" id="confirm-overlay" hidden aria-modal="true" role="alertdialog">
+  <div class="modal-box">
+    <h3 class="modal-title" id="confirm-title">Confirm</h3>
+    <p class="modal-body" id="confirm-body"></p>
+    <div class="modal-footer">
+      <button class="btn btn-danger" id="confirm-ok">Confirm</button>
+      <button class="btn btn-sm" id="confirm-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='admin/scheduling.js') }}"></script>
+{% endblock %}

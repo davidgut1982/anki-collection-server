@@ -660,3 +660,198 @@ body {
 .prompt-row { display: flex; flex-direction: column; gap: 4px; }
 .prompt-row .fnr-label { min-width: unset; font-size: 12px; font-weight: 600; color: var(--text-muted); }
 .prompt-row .fnr-input { width: 100%; }
+
+/* ================================================================
+   A7: Scheduling page styles
+   ================================================================ */
+
+/* ---- Caveat banner ---- */
+.sched-caveat-banner {
+  background: #fff8c5;
+  border: 1px solid #e3b341;
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--warn);
+  margin-bottom: 20px;
+  line-height: 1.5;
+}
+
+/* ---- Preset card ---- */
+.sched-preset-card { padding: 16px 24px; }
+.sched-preset-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.sched-preset-id { font-size: 12px; color: var(--text-muted); }
+.sched-preset-hint {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ---- Shared form controls ---- */
+.sched-select {
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  background: var(--surface);
+  min-width: 220px;
+}
+.sched-select-sm { min-width: 140px; }
+.sched-select:focus { outline: none; border-color: var(--accent); }
+
+.sched-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  min-width: 200px;
+  white-space: nowrap;
+}
+
+.sched-input {
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-family: inherit;
+  width: 260px;
+}
+.sched-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(9,105,218,.1); }
+.sched-input-sm { width: 100px; }
+
+.sched-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.sched-hint code {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  background: var(--bg);
+  padding: 1px 3px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+/* ---- Fieldsets ---- */
+.sched-fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  margin-bottom: 16px;
+}
+.sched-legend {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 0 6px;
+}
+
+/* ---- Form rows ---- */
+.sched-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 0;
+}
+.sched-row-check { align-items: flex-start; padding-top: 8px; }
+.sched-row-check .check-label { margin-top: 1px; }
+
+/* ---- Form footer ---- */
+.sched-form-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---- Status messages ---- */
+.sched-status { font-size: 12px; }
+.sched-status-ok   { color: var(--ok); }
+.sched-status-err  { color: var(--danger); white-space: pre-wrap; }
+.sched-status-info { color: var(--text-muted); }
+
+/* ---- FSRS panel ---- */
+.sched-fsrs-card { }
+
+.sched-fsrs-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.badge-ok   { background: #dcfce7; color: var(--ok);    border: 1px solid #86efac; }
+.badge-muted{ background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); }
+.badge-err  { background: #fff0f0; color: var(--danger); border: 1px solid #fca5a5; }
+
+.sched-fsrs-enable-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background: #fffde7;
+  border: 1px solid #e3b341;
+  border-radius: var(--radius);
+}
+
+.sched-fsrs-enabled-note {
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.sched-ok-text { color: var(--ok); font-weight: 600; margin-right: 8px; }
+
+.sched-fsrs-section {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+  margin-top: 14px;
+}
+
+.sched-subsection-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+/* ---- FSRS params read-only grid ---- */
+.sched-params-display { margin-bottom: 6px; }
+
+.fsrs-params-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.fsrs-param-cell {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 6px;
+  color: var(--text-muted);
+  cursor: default;
+}
+.fsrs-param-cell:hover { border-color: var(--accent); color: var(--text); }
+
+/* ---- Optimal retention result ---- */
+.sched-optimal-result {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.sched-optimal-ok  { background: #dcfce7; border: 1px solid #86efac; color: #166534; }
+.sched-optimal-err { background: #fff0f0; border: 1px solid #fca5a5; color: var(--danger); }

@@ -1,5 +1,5 @@
 """
-Admin blueprint routes -- A1 scaffold + A6 card/note browser.
+Admin blueprint routes -- A1 scaffold + A6 card/note browser + A7 scheduling.
 
 Routes implemented
 ------------------
@@ -9,6 +9,7 @@ GET  /admin             -- Dashboard landing page.
 GET  /admin/logout      -- Clear the ``token`` cookie; redirect to /admin/login.
 POST /admin/api/invoke  -- Token-gated AnkiConnect action proxy (A6).
 GET  /admin/browse      -- Card/note browser + triage UI (A6).
+GET  /admin/scheduling  -- Deck options + FSRS scheduling panel (A7).
 
 Auth guard
 ----------
@@ -307,3 +308,21 @@ def browse() -> Any:
         all_tags=all_tags,
         model_field_names=model_field_names,
     )
+
+
+# ---------------------------------------------------------------------------
+# A7: Scheduling page
+# ---------------------------------------------------------------------------
+
+
+@admin_bp.get("/scheduling")
+def scheduling() -> Any:
+    """Deck options + FSRS scheduling panel.
+
+    Renders a static shell page.  All data (preset list, FSRS status, params)
+    is loaded client-side via acsInvoke so the page does not need to open the
+    collection at render time.  This keeps the route lightweight and consistent
+    with the intent that all admin action calls are token-gated through the
+    /admin/api/invoke proxy.
+    """
+    return render_template("admin/scheduling.html")
