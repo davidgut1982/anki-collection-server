@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security — Code Critic hardening: /admin auth boundary (feat/admin-actions)
+
+#### HIGH — cookie `Secure` flag + ProxyFix (`src/admin/routes.py`, `src/server.py`)
+
+- `response.set_cookie(...)` now passes `secure=True` so the `token` cookie is
+  only transmitted over HTTPS.  The previous code omitted the flag "because the
+  sidecar runs behind an internal Docker network" — but the admin UI is always
+  accessed via pfSense TLS termination, so the Secure flag must be set.
+- `werkzeug.middleware.proxy_fix.ProxyFix(app.wsgi_app, x_proto=1, x_host=1)`
+  added in `server.py` so Flask sees `https://` from `X-Forwarded-Proto` and
+  the flag takes effect without further changes in production.
+
+#### MED — IP-keyed login rate-limit (`src/admin/auth.py`, `src/admin/routes.py`)
+
+- New module-level in-memory throttle in `auth.py`:
+  - Max 10 failed `POST /admin/login` attempts per IP in any rolling 5-minute
+    window (using `time.monotonic()`).
+  - On limit exceeded: 429 with `Retry-After` header, no token comparison made.
+  - Counter reset to zero on successful login (`_ratelimit_reset`).
+  - Thread-safe via a `threading.Lock`.  Appropriate for the single-process
+    waitress deployment; no external dependency (no flask-limiter).
+- Public API: `_ratelimit_check(ip)`, `_ratelimit_record_failure(ip)`,
+  `_ratelimit_reset(ip)` (prefixed `_` — internal to admin package).
+
+#### MED — decouple `secret_key` from `ADMIN_TOKEN` (`src/server.py`)
+
+- `app.secret_key` was previously set to the raw `ADMIN_TOKEN` value, meaning
+  leaking the session key was equivalent to leaking the admin token.
+- New derivation (in priority order):
+  1. `FLASK_SECRET_KEY` env var if set (operator override).
+  2. `hashlib.sha256(b"acs-flask-session:" + ADMIN_TOKEN.encode()).hexdigest()`
+     — stable across restarts, domain-separated, distinct from the token.
+  3. `os.urandom(32)` — only when `ADMIN_TOKEN` is also unset (admin UI
+     disabled anyway).
+- Comment added: `# INVARIANT: secret_key is derived, not the raw ADMIN_TOKEN`.
+
+#### LOW — `login_post` returns 503 (not 200) when `ADMIN_TOKEN` unset
+
+- The render of `admin/login.html` with the "Admin UI is disabled" error
+  previously returned the default HTTP 200.  Now correctly returns 503, making
+  the disabled state machine-readable and consistent with `GET /admin/`.
+
+#### LOW — rename `_token_valid` → `token_valid`; clean up stale comment
+
+- `_token_valid` renamed to `token_valid` in `auth.py` (public function — all
+  auth paths should go through the same auditable comparison point; a private
+  name invited future bypass).  `routes.py` import updated.
+- Removed the stale "Static files under the admin blueprint also need no auth"
+  comment from `check_admin_auth()` — the blueprint no longer serves static
+  files, and the comment was misleading.  Replaced with a clear note that
+  exemptions are the caller's responsibility via `_EXEMPT_ENDPOINTS`.
+
+#### Tests — 8 new tests in `tests/test_admin_auth.py`
+
+- **`TestSecureCookieFlags`** (1): `Set-Cookie` on valid login has `Secure`,
+  `HttpOnly`, and `SameSite=Strict` flags.
+- **`TestLoginPostTokenUnset`** (1): `POST /admin/login` returns 503 (not 200)
+  when `ADMIN_TOKEN` is unset.
+- **`TestRateLimit`** (3): 429 returned after `_RATELIMIT_MAX_FAILURES` failed
+  attempts; `Retry-After` header present; counter resets on direct call to
+  `_ratelimit_reset`; counter resets on successful login (subsequent fail = 401
+  not 429).
+- **`TestSecretKeyDecoupled`** (3): `secret_key != ADMIN_TOKEN`; deterministic
+  across two app builds with the same token; different tokens produce different
+  keys.
+
+Total: 18 → 26 tests (all pass, 0.33 s).  `ruff check` clean.
+
 ### Added — A1: /admin scaffold + token auth gate (feat/admin-actions)
 
 **New files**

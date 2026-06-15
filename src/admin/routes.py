@@ -38,7 +38,14 @@ from flask import (
 )
 from flask.wrappers import Response
 
-from src.admin.auth import ADMIN_TOKEN_CONFIGURED, check_admin_auth, _token_valid
+from src.admin.auth import (
+    ADMIN_TOKEN_CONFIGURED,
+    check_admin_auth,
+    token_valid,
+    _ratelimit_check,
+    _ratelimit_record_failure,
+    _ratelimit_reset,
+)
 
 log = logging.getLogger(__name__)
 
@@ -101,36 +108,61 @@ def login_post() -> Any:
     On valid token: set an HttpOnly ``token`` cookie and redirect to /admin.
     On invalid token: re-render the login form with an error message.
 
-    The cookie is HttpOnly to prevent JavaScript from reading it (XSS
-    mitigation).  SameSite=Strict prevents CSRF.  The Secure flag is omitted
-    here because the sidecar runs behind an internal Docker network (no TLS
-    termination at this layer) — the deployer should add Secure if they expose
-    the admin port externally over HTTPS.
+    Cookie flags:
+    - HttpOnly  — prevents JavaScript from reading it (XSS mitigation).
+    - SameSite=Strict — prevents CSRF (cookie not sent on cross-site requests).
+    - Secure    — cookie only sent over HTTPS.  The app runs behind pfSense TLS
+                  termination; ProxyFix (wired in server.py) ensures Flask sees
+                  https:// via X-Forwarded-Proto so the flag is honoured.
     """
     if not ADMIN_TOKEN_CONFIGURED:
         return render_template(
             "admin/login.html",
             error="Admin UI is disabled: ADMIN_TOKEN is not set.",
+        ), 503
+
+    ip = request.remote_addr or "unknown"
+
+    # Rate-limit: reject if the IP has exceeded the failed-attempt threshold.
+    retry_after = _ratelimit_check(ip)
+    if retry_after is not None:
+        log.warning(
+            "Admin login: rate limit exceeded for %s (retry after %ds)",
+            ip,
+            retry_after,
         )
+        response = make_response(
+            render_template(
+                "admin/login.html",
+                error="Too many failed login attempts. Please wait before retrying.",
+            ),
+            429,
+        )
+        response.headers["Retry-After"] = str(retry_after)
+        return response
 
     submitted = request.form.get("token", "").strip()
-    if not submitted or not _token_valid(submitted):
+    if not submitted or not token_valid(submitted):
+        _ratelimit_record_failure(ip)
         log.warning(
             "Admin login: invalid token attempt from %s",
-            request.remote_addr,
+            ip,
         )
         return render_template(
             "admin/login.html",
             error="Invalid token. Please try again.",
         ), 401
 
-    log.info("Admin login: successful from %s", request.remote_addr)
+    # Successful login — reset the failure counter for this IP.
+    _ratelimit_reset(ip)
+    log.info("Admin login: successful from %s", ip)
     response = make_response(redirect(url_for("admin.index")))
     response.set_cookie(
         "token",
         submitted,
         httponly=True,
         samesite="Strict",
+        secure=True,
         # max_age omitted → session cookie (cleared when browser closes)
     )
     return response

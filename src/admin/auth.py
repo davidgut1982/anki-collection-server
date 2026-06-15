@@ -34,6 +34,9 @@ import base64
 import hmac
 import logging
 import os
+import threading
+import time
+from collections import defaultdict
 from typing import Optional
 
 from flask import Request, make_response, redirect, request, url_for
@@ -55,6 +58,56 @@ else:
         "Admin UI: ADMIN_TOKEN is not set — /admin routes will return 503. "
         "Set ADMIN_TOKEN in the container environment to enable the admin UI."
     )
+
+
+# ---------------------------------------------------------------------------
+# Login rate-limiter (in-memory, IP-keyed, single-process safe)
+# ---------------------------------------------------------------------------
+# This server runs under waitress with a fixed thread count and a single
+# process — module-level state is shared safely across threads via _ratelimit_lock.
+#
+# Policy: max 10 failed attempts per IP in any rolling 5-minute window.
+# On success the counter for that IP is reset.  A 429 response with a
+# Retry-After header is returned when the limit is exceeded.
+
+_RATELIMIT_MAX_FAILURES: int = 10
+_RATELIMIT_WINDOW_SECONDS: int = 300  # 5 minutes
+
+# Map: ip_address → list of failure timestamps (float, epoch seconds)
+_ratelimit_failures: dict[str, list[float]] = defaultdict(list)
+_ratelimit_lock: threading.Lock = threading.Lock()
+
+
+def _ratelimit_check(ip: str) -> Optional[int]:
+    """Return None if the IP is within the allowed limit, or seconds-to-wait.
+
+    Prunes timestamps older than the window before counting.
+    Thread-safe via _ratelimit_lock.
+    """
+    now = time.monotonic()
+    window_start = now - _RATELIMIT_WINDOW_SECONDS
+    with _ratelimit_lock:
+        # Prune stale entries
+        _ratelimit_failures[ip] = [
+            ts for ts in _ratelimit_failures[ip] if ts >= window_start
+        ]
+        if len(_ratelimit_failures[ip]) >= _RATELIMIT_MAX_FAILURES:
+            oldest = _ratelimit_failures[ip][0]
+            retry_after = int(oldest + _RATELIMIT_WINDOW_SECONDS - now) + 1
+            return max(retry_after, 1)
+    return None
+
+
+def _ratelimit_record_failure(ip: str) -> None:
+    """Record a failed login attempt for the given IP."""
+    with _ratelimit_lock:
+        _ratelimit_failures[ip].append(time.monotonic())
+
+
+def _ratelimit_reset(ip: str) -> None:
+    """Reset the failure counter for the given IP (call on successful login)."""
+    with _ratelimit_lock:
+        _ratelimit_failures.pop(ip, None)
 
 
 # ---------------------------------------------------------------------------
@@ -106,11 +159,16 @@ def _extract_token(req: Request) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
-def _token_valid(presented: str) -> bool:
+def token_valid(presented: str) -> bool:
     """Return True iff ``presented`` matches ``ADMIN_TOKEN`` in constant time.
 
     Both strings are encoded to UTF-8 bytes before ``hmac.compare_digest`` is
     called — the function requires both arguments to be the same type.
+
+    This is a public function so that all auth paths (header, cookie, form
+    submission) go through a single, auditable comparison point.  Future auth
+    additions (e.g. TOTP second factor) should extend this function rather than
+    adding a second comparison elsewhere.
     """
     if not ADMIN_TOKEN_CONFIGURED or not ADMIN_TOKEN:
         return False
@@ -151,8 +209,8 @@ def check_admin_auth() -> Optional[Response]:
             return check_admin_auth()
     """
     # The login route must be exempt — it IS the way to get a token.
-    # Static files under the admin blueprint also need no auth.
-    # (Caller is responsible for exempting these; this function just checks.)
+    # Callers are responsible for exempting non-auth endpoints (e.g. the login
+    # GET/POST) via _EXEMPT_ENDPOINTS in routes.py before calling this function.
 
     # 503 — admin disabled
     if not ADMIN_TOKEN_CONFIGURED:
@@ -165,7 +223,7 @@ def check_admin_auth() -> Optional[Response]:
         return response
 
     presented = _extract_token(request)
-    if presented is None or not _token_valid(presented):
+    if presented is None or not token_valid(presented):
         if presented is not None:
             log.warning(
                 "Admin auth: invalid token presented from %s",

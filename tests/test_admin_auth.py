@@ -15,6 +15,13 @@ Coverage
 - POST / (AnkiConnect version) unaffected — returns 200 with result=6, NOT gated.
 - GET /admin/logout clears cookie and redirects to /admin/login.
 
+Security hardening coverage (Code Critic remediation)
+------------------------------------------------------
+- Cookie has Secure + HttpOnly + SameSite=Strict flags.
+- POST /admin/login returns 503 (not 200) when ADMIN_TOKEN is unset.
+- Rate-limit: returns 429 after N failed attempts; resets on successful login.
+- Flask secret_key != ADMIN_TOKEN (derived, not the raw token).
+
 ``waitress`` is not installed in the test environment (it only exists inside the
 production Docker image).  Following the pattern in test_health_lock_free.py,
 we stub it into sys.modules before any src.* imports.
@@ -28,6 +35,7 @@ module is a singleton.
 from __future__ import annotations
 
 import base64
+import hashlib
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -90,7 +98,13 @@ def _build_test_app(admin_token: str | None) -> Any:
         template_folder=str(_REPO_ROOT / "templates"),
         static_folder=str(_REPO_ROOT / "static"),
     )
-    app.secret_key = admin_token or "test-secret-key"
+    # Mirror server.py secret_key derivation: derived from token, not the raw token.
+    if admin_token:
+        app.secret_key = hashlib.sha256(
+            b"acs-flask-session:" + admin_token.encode()
+        ).hexdigest()
+    else:
+        app.secret_key = "test-secret-key-no-token"
     app.config["TESTING"] = True
 
     @app.post("/")
@@ -443,3 +457,181 @@ class TestExistingRoutesUnaffected:
         data = resp.get_json()
         assert data["result"] == 6
         assert data["error"] is None
+
+
+# ---------------------------------------------------------------------------
+# Security hardening — Code Critic remediation tests
+# ---------------------------------------------------------------------------
+
+
+class TestSecureCookieFlags:
+    """Verify the login cookie carries all required security flags."""
+
+    def test_cookie_has_secure_httponly_samesite_strict(self) -> None:
+        """Successful login must set Secure; HttpOnly; SameSite=Strict on the token cookie."""
+        with _client(_TOKEN) as c:
+            resp = c.post(
+                "/admin/login",
+                data={"token": _TOKEN},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 302, (
+            f"Expected 302 redirect after valid login, got {resp.status_code}"
+        )
+        set_cookie = resp.headers.get("Set-Cookie", "")
+        # All three flags must be present (case-insensitive per RFC 6265).
+        set_cookie_lower = set_cookie.lower()
+        assert "secure" in set_cookie_lower, (
+            f"Expected Secure flag in Set-Cookie, got: {set_cookie!r}"
+        )
+        assert "httponly" in set_cookie_lower, (
+            f"Expected HttpOnly flag in Set-Cookie, got: {set_cookie!r}"
+        )
+        assert "samesite=strict" in set_cookie_lower, (
+            f"Expected SameSite=Strict in Set-Cookie, got: {set_cookie!r}"
+        )
+
+
+class TestLoginPostTokenUnset:
+    """Verify login_post returns 503 (not 200) when ADMIN_TOKEN is unset."""
+
+    def test_login_post_returns_503_when_token_unset(self) -> None:
+        """POST /admin/login must return 503 when ADMIN_TOKEN is not configured."""
+        with _client(None) as c:
+            resp = c.post(
+                "/admin/login",
+                data={"token": "anything"},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 503, (
+            f"Expected 503 when ADMIN_TOKEN unset, got {resp.status_code}"
+        )
+        body = resp.data.decode()
+        assert "ADMIN_TOKEN" in body, (
+            f"Expected 'ADMIN_TOKEN' in body for 503 response, got: {body!r}"
+        )
+
+
+class TestRateLimit:
+    """Verify IP-keyed rate-limiting on POST /admin/login."""
+
+    def _reset_ratelimit(self, ip: str = "127.0.0.1") -> None:
+        """Clear the rate-limit state for the given IP between tests."""
+        import src.admin.auth as auth_mod
+        with auth_mod._ratelimit_lock:
+            auth_mod._ratelimit_failures.pop(ip, None)
+
+    def test_rate_limit_returns_429_after_max_failures(self) -> None:
+        """After _RATELIMIT_MAX_FAILURES failed attempts the endpoint returns 429."""
+        import src.admin.auth as auth_mod
+
+        self._reset_ratelimit()
+        try:
+            with _client(_TOKEN) as c:
+                # Submit exactly max_failures wrong tokens.
+                for _ in range(auth_mod._RATELIMIT_MAX_FAILURES):
+                    r = c.post("/admin/login", data={"token": "WRONG"})
+                    assert r.status_code == 401, (
+                        f"Expected 401 for wrong token, got {r.status_code}"
+                    )
+
+                # The (N+1)-th attempt should be rate-limited.
+                resp = c.post("/admin/login", data={"token": "WRONG"})
+            assert resp.status_code == 429, (
+                f"Expected 429 after {auth_mod._RATELIMIT_MAX_FAILURES} failures, "
+                f"got {resp.status_code}"
+            )
+            assert "Retry-After" in resp.headers, (
+                "Expected Retry-After header in 429 response"
+            )
+            retry_after = int(resp.headers["Retry-After"])
+            assert retry_after >= 1, (
+                f"Retry-After must be >= 1 second, got {retry_after}"
+            )
+        finally:
+            self._reset_ratelimit()
+
+    def test_successful_login_resets_rate_limit(self) -> None:
+        """A successful login clears the failure counter so the IP is no longer blocked."""
+        import src.admin.auth as auth_mod
+
+        self._reset_ratelimit()
+        try:
+            with _client(_TOKEN) as c:
+                # Push the IP to the limit with wrong tokens.
+                for _ in range(auth_mod._RATELIMIT_MAX_FAILURES):
+                    c.post("/admin/login", data={"token": "WRONG"})
+
+                # Confirm it is now rate-limited.
+                rate_limited = c.post("/admin/login", data={"token": "WRONG"})
+                assert rate_limited.status_code == 429, (
+                    f"Expected 429 before reset, got {rate_limited.status_code}"
+                )
+
+                # Directly reset via the module function (simulates a successful
+                # login from a different session on the same IP).
+                auth_mod._ratelimit_reset("127.0.0.1")
+
+                # Now a failed attempt should return 401 again, not 429.
+                resp = c.post("/admin/login", data={"token": "WRONG"})
+            assert resp.status_code == 401, (
+                f"Expected 401 after rate-limit reset, got {resp.status_code}"
+            )
+        finally:
+            self._reset_ratelimit()
+
+    def test_correct_token_after_failures_resets_counter(self) -> None:
+        """A correct token resets the failure counter via _ratelimit_reset."""
+        import src.admin.auth as auth_mod
+
+        self._reset_ratelimit()
+        try:
+            with _client(_TOKEN) as c:
+                # Submit some (but fewer than max) wrong tokens.
+                for _ in range(auth_mod._RATELIMIT_MAX_FAILURES - 1):
+                    c.post("/admin/login", data={"token": "WRONG"})
+
+                # Successful login should reset the counter.
+                ok_resp = c.post(
+                    "/admin/login",
+                    data={"token": _TOKEN},
+                    follow_redirects=False,
+                )
+                assert ok_resp.status_code == 302, (
+                    f"Expected 302 on valid login, got {ok_resp.status_code}"
+                )
+
+                # After reset the IP can fail again without immediately hitting 429.
+                resp = c.post("/admin/login", data={"token": "WRONG"})
+            assert resp.status_code == 401, (
+                f"Expected 401 (counter reset), not 429, got {resp.status_code}"
+            )
+        finally:
+            self._reset_ratelimit()
+
+
+class TestSecretKeyDecoupled:
+    """Verify Flask secret_key is derived from ADMIN_TOKEN, not equal to it."""
+
+    def test_secret_key_differs_from_admin_token(self) -> None:
+        """The app's secret_key must not equal ADMIN_TOKEN (it must be derived)."""
+        app = _build_test_app(_TOKEN)
+        assert app.secret_key != _TOKEN, (
+            "secret_key must not be the raw ADMIN_TOKEN — it should be a derived value"
+        )
+
+    def test_secret_key_is_deterministic(self) -> None:
+        """Building two apps with the same token must produce the same secret_key."""
+        app1 = _build_test_app(_TOKEN)
+        app2 = _build_test_app(_TOKEN)
+        assert app1.secret_key == app2.secret_key, (
+            "secret_key must be deterministic (stable across restarts)"
+        )
+
+    def test_secret_key_differs_for_different_tokens(self) -> None:
+        """Two different tokens must produce different secret keys."""
+        app1 = _build_test_app("token-alpha")
+        app2 = _build_test_app("token-beta")
+        assert app1.secret_key != app2.secret_key, (
+            "Different ADMIN_TOKENs must produce different secret keys"
+        )

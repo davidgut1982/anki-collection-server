@@ -67,6 +67,7 @@ AnkiConnect wire protocol:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import signal
@@ -77,6 +78,7 @@ from typing import Any
 
 from flask import Flask, jsonify, request
 from waitress import serve
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 import src.collection as col_mod
 from src.actions import ACTIONS
@@ -111,9 +113,28 @@ app = Flask(
 # admin login flow to set signed cookies).  In production the value is
 # irrelevant for our auth scheme because we use a plain HttpOnly cookie
 # (not Flask's signed session cookie), but Flask requires it to be set.
-# We derive it from ADMIN_TOKEN so it is stable across restarts.
+#
+# INVARIANT: secret_key is derived, not the raw ADMIN_TOKEN.
+# Using ADMIN_TOKEN directly as the secret key would expose it via Flask's
+# session-signing machinery.  We use a separate FLASK_SECRET_KEY env var if
+# set, otherwise derive a stable key from ADMIN_TOKEN via SHA-256 with a
+# domain-separation prefix so the two values are always distinct.
 _admin_token = os.environ.get("ADMIN_TOKEN", "")
-app.secret_key = _admin_token or os.urandom(32)
+_flask_secret_key = os.environ.get("FLASK_SECRET_KEY", "")
+if _flask_secret_key:
+    app.secret_key = _flask_secret_key
+elif _admin_token:
+    app.secret_key = hashlib.sha256(
+        b"acs-flask-session:" + _admin_token.encode()
+    ).hexdigest()
+else:
+    app.secret_key = os.urandom(32)
+
+# Trust the X-Forwarded-Proto and X-Forwarded-Host headers set by the reverse
+# proxy (pfSense / nginx TLS termination) so that Flask sees https:// and sets
+# the Secure flag correctly on cookies.  x_proto=1 and x_host=1 mean we trust
+# exactly one hop of proxying.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)  # type: ignore[method-assign]
 
 # ---------------------------------------------------------------------------
 # Register the admin blueprint

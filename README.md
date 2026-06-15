@@ -96,9 +96,29 @@ The admin console accepts the token via any of the following (checked in order):
 All token comparisons use `hmac.compare_digest` (constant-time, safe against
 timing attacks).
 
-The login form at `/admin/login` sets an `HttpOnly; SameSite=Strict` session
-cookie after a valid token is submitted, enabling normal browser navigation
-without re-entering the token on each page.
+The login form at `/admin/login` sets an `HttpOnly; SameSite=Strict; Secure`
+session cookie after a valid token is submitted, enabling normal browser
+navigation without re-entering the token on each page.
+
+**Note:** The `Secure` cookie flag requires HTTPS.  The server trusts
+`X-Forwarded-Proto` from the reverse proxy (pfSense / nginx TLS termination)
+via Werkzeug's `ProxyFix`, so the flag works correctly behind one hop of TLS
+offloading without any additional configuration.
+
+**Rate-limiting:** `POST /admin/login` is rate-limited to 10 failed attempts
+per IP per 5 minutes.  Excess attempts receive `429 Too Many Requests` with a
+`Retry-After` header.  The counter resets on successful login.
+
+**Optional env vars:**
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `ADMIN_TOKEN` | Admin UI token (required to enable `/admin`) | — |
+| `FLASK_SECRET_KEY` | Override the Flask session signing key | Derived from `ADMIN_TOKEN` via SHA-256 |
+
+`FLASK_SECRET_KEY` is optional.  When unset, the server derives a stable key
+from `ADMIN_TOKEN` using a domain-separated SHA-256 hash — the key is never the
+raw token value.
 
 ## Status
 
