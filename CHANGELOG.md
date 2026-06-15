@@ -7,6 +7,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — P0 card/note triage actions (feat/admin-actions)
+
+Nine new actions for the admin triage UI, implemented in `src/actions.py`
+and registered in `ACTIONS`.  All mutations run under `col_mod._col_lock`.
+Errors raise `ValueError` → server converts to `{"result":null,"error":"..."}` HTTP 200.
+
+#### Scheduler actions
+
+**`bury`**
+- Params: `{"cards": [int]}`
+- Result: null
+- Calls `col.sched.bury_cards(card_ids, manual=True)` → `BURY_USER` mode (manual bury, distinct from sibling auto-bury).
+- Confirmed sig: `bury_cards(self, ids: Sequence[CardId], manual: bool = True) -> OpChangesWithCount`
+
+**`unbury`**
+- Params: `{"cards": [int]}`
+- Result: null
+- Calls `col.sched.unbury_cards(card_ids)`.
+- Confirmed sig: `unbury_cards(self, ids: Sequence[CardId]) -> OpChanges`
+
+**`setDueDate`**
+- Params: `{"cards": [int], "days": str}`
+- Result: null
+- `days` is a non-empty string spec: `"1"`, `"3"`, `"1-7"` (random range).  Converts cards to review type.
+- Raises `ValueError` if `days` is empty or not a string.
+- Confirmed sig: `set_due_date(self, card_ids: Sequence[CardId], days: str, config_key: ... | None = None) -> OpChanges`
+
+**`forgetCards`**
+- Params: `{"cards": [int], "restorePosition": bool = False, "resetCounts": bool = False}`
+- Result: null
+- Resets cards to the new queue (AnkiConnect name for `schedule_cards_as_new`).
+- Confirmed sig: `schedule_cards_as_new(self, card_ids: Sequence[CardId], *, restore_position: bool = False, reset_counts: bool = False, context: ... | None = None) -> OpChanges`
+
+**`repositionNewCards`** / **`reposition`** (alias)
+- Params: `{"cards": [int], "start": int, "step": int = 1, "randomize": bool = False, "shiftExisting": bool = True}`
+- Result: null
+- Confirmed sig: `reposition_new_cards(self, card_ids: Sequence[CardId], starting_from: int, step_size: int, randomize: bool, shift_existing: bool) -> OpChangesWithCount`
+- Note: all 4 positional kwargs are required (no defaults in the backend).
+
+#### Note actions
+
+**`findAndReplace`**
+- Params: `{"notes": [int], "search": str, "replacement": str, "regex": bool = False, "field": str | None = None, "matchCase": bool = False}`
+- Result: count (int) of notes modified.
+- Confirmed sig: `find_and_replace(self, *, note_ids: Sequence[NoteId], search: str, replacement: str, regex: bool = False, field_name: str | None = None, match_case: bool = False) -> OpChangesWithCount`
+
+**`findDuplicates`**
+- Params: `{"field": str, "search": str = ""}`
+- Result: `[{"value": str, "notes": [int]}, ...]`
+- Confirmed sig: `find_dupes(self, field_name: str, search: str = "") -> list[tuple[str, list]]`
+- Implementation note: `find_dupes` calls `strip_html_media` which requires `anki.lang.current_i18n`.
+  Our headless server never calls `set_lang()`; the handler lazily sets
+  `anki.lang.current_i18n = col._backend` (the open collection's `RustBackend`) on first
+  call.  This is safe and idempotent.
+
+#### Tag actions
+
+**`clearUnusedTags`**
+- Params: `{}`
+- Result: count (int) of tags removed.
+- Confirmed sig: `clear_unused_tags(self) -> OpChangesWithCount`
+
+**`getTags`**
+- Params: `{}`
+- Result: `list[str]`
+- Confirmed sig: `all(self) -> list[str]`
+- Read-only, no lock.
+
+#### Signature deviations from the prompt spec
+
+| Action | Spec said | Actual anki 25.9.2 | Notes |
+|--------|-----------|---------------------|-------|
+| `bury` | `bury_cards(card_ids, manual=True)` | `bury_cards(ids, manual=True)` | param named `ids`, not `card_ids`; called positionally |
+| `unbury` | `unbury_cards(card_ids)` | `unbury_cards(ids)` | same — positional call unaffected |
+| `reposition` | `reposition_new_cards(card_ids, starting_from=, step_size=, randomize=, shift_existing=)` | confirmed exact | all kwargs required (no defaults) |
+
+Confirmed by reading `/home/david/.local/lib/python3.11/site-packages/anki/scheduler/base.py`.
+
+#### Tests — `tests/test_admin_triage_actions.py` (29 tests, all pass, 0.29 s)
+
+- **`TestBuryUnbury`** (4): bury changes queue to negative; unbury restores to ≥0; empty lists are no-ops.
+- **`TestSetDueDate`** (4): `"5"` → card becomes type=2/queue=2; `"1-7"` range spec accepted; empty string raises `ValueError`; non-string raises `ValueError`.
+- **`TestForgetCards`** (4): review card (type=2) reset to new (type=0/queue=0); `restorePosition=True` and `resetCounts=True` variants; empty list is no-op.
+- **`TestRepositionNewCards`** (3): due positions ≥ start value; `"reposition"` alias works; empty list is no-op.
+- **`TestFindAndReplace`** (5): plain replace edits field, returns count=1; regex replace; field-scoped replace; zero count when no match; multi-note count=2.
+- **`TestFindDuplicates`** (3): finds two notes sharing a field value; empty search returns `[]`; result shape has `value` (str) + `notes` (list[int]).
+  Note: `findDuplicates` tests use add-then-rewrite strategy (add note A normally; add note B with distinct front; use `findAndReplace` to make B's front match A's) to bypass `addNote`'s duplicate guard while producing a genuine duplicate for `find_dupes` to detect.
+- **`TestClearUnusedTagsAndGetTags`** (4): `getTags` returns list of strings; `clearUnusedTags` removes orphan after note deletion; tag added via `addTags` appears in `getTags`; `clearUnusedTags` with no orphans returns int ≥ 0.
+- **`TestActionRegistration`** (2): all 10 new keys present in `ACTIONS`; all handlers are callable.
+
+Total test count: 138 → 167 (164 pass, 3 skipped — FSRS optimizer tests, expected).
+
 ### Security — Code Critic hardening: /admin auth boundary (feat/admin-actions)
 
 #### HIGH — cookie `Secure` flag + ProxyFix (`src/admin/routes.py`, `src/server.py`)

@@ -896,6 +896,242 @@ def _get_collection_stats_html(params: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Card / Note triage — P0 admin actions
+# ---------------------------------------------------------------------------
+
+
+def _bury(params: dict) -> None:
+    """Bury cards so they do not appear until tomorrow.
+
+    Input:  ``{"cards": [int]}``
+    Output: null
+
+    Uses ``col.sched.bury_cards(ids, manual=True)`` — the ``manual=True``
+    flag sets ``BURY_USER`` mode (same as a manual bury from the reviewer),
+    distinct from ``BURY_SCHED`` (automatic sibling bury).
+
+    Confirmed signature (anki 25.9.2 scheduler/base.py:163):
+        bury_cards(self, ids: Sequence[CardId], manual: bool = True) -> OpChangesWithCount
+    """
+    col = _col()
+    card_ids: list[int] = params.get("cards", [])
+    with col_mod._col_lock:
+        col.sched.bury_cards(card_ids, manual=True)
+    return None
+
+
+def _unbury(params: dict) -> None:
+    """Unbury cards so they are available again today.
+
+    Input:  ``{"cards": [int]}``
+    Output: null
+
+    Uses ``col.sched.unbury_cards(ids)``.
+
+    Confirmed signature (anki 25.9.2 scheduler/base.py:143):
+        unbury_cards(self, ids: Sequence[CardId]) -> OpChanges
+    """
+    col = _col()
+    card_ids: list[int] = params.get("cards", [])
+    with col_mod._col_lock:
+        col.sched.unbury_cards(card_ids)
+    return None
+
+
+def _set_due_date(params: dict) -> None:
+    """Set the due date for cards using a day-spec string.
+
+    Input:  ``{"cards": [int], "days": str}``
+    Output: null
+
+    ``days`` is a non-empty string spec accepted by the Anki backend, e.g.
+    ``"1"``, ``"3"``, or ``"1-7"`` (random between 1 and 7 days).  Cards are
+    converted to review cards if they were new/learning.
+
+    Confirmed signature (anki 25.9.2 scheduler/base.py:205):
+        set_due_date(self, card_ids: Sequence[CardId], days: str,
+                     config_key: Config.String.V | None = None) -> OpChanges
+
+    Raises:
+        ValueError: if ``days`` is empty or not a string.
+    """
+    col = _col()
+    card_ids: list[int] = params.get("cards", [])
+    days: str = params.get("days", "")
+    if not isinstance(days, str) or not days.strip():
+        raise ValueError("setDueDate: 'days' must be a non-empty string (e.g. '1', '3-7')")
+    with col_mod._col_lock:
+        col.sched.set_due_date(card_ids, days)
+    return None
+
+
+def _forget_cards(params: dict) -> None:
+    """Reset cards to the new queue (forget review history).
+
+    Input:  ``{"cards": [int], "restorePosition": bool = False, "resetCounts": bool = False}``
+    Output: null
+
+    Equivalent to AnkiConnect's ``forgetCards`` action.
+
+    Confirmed signature (anki 25.9.2 scheduler/base.py:182):
+        schedule_cards_as_new(self, card_ids: Sequence[CardId], *,
+                               restore_position: bool = False,
+                               reset_counts: bool = False,
+                               context: ... | None = None) -> OpChanges
+    """
+    col = _col()
+    card_ids: list[int] = params.get("cards", [])
+    restore_position: bool = bool(params.get("restorePosition", False))
+    reset_counts: bool = bool(params.get("resetCounts", False))
+    with col_mod._col_lock:
+        col.sched.schedule_cards_as_new(
+            card_ids,
+            restore_position=restore_position,
+            reset_counts=reset_counts,
+        )
+    return None
+
+
+def _reposition_new_cards(params: dict) -> None:
+    """Reorder new cards within the new queue.
+
+    Input:  ``{"cards": [int], "start": int, "step": int = 1,
+               "randomize": bool = False, "shiftExisting": bool = True}``
+    Output: null
+
+    Also registered as ``"repositionNewCards"`` (AnkiConnect name) and
+    ``"reposition"`` (short alias).
+
+    Confirmed signature (anki 25.9.2 scheduler/base.py:247):
+        reposition_new_cards(self, card_ids: Sequence[CardId],
+                              starting_from: int, step_size: int,
+                              randomize: bool, shift_existing: bool) -> OpChangesWithCount
+
+    Note: all positional keyword args are required (no defaults in the backend).
+    """
+    col = _col()
+    card_ids: list[int] = params.get("cards", [])
+    start: int = int(params.get("start", 0))
+    step: int = int(params.get("step", 1))
+    randomize: bool = bool(params.get("randomize", False))
+    shift_existing: bool = bool(params.get("shiftExisting", True))
+    with col_mod._col_lock:
+        col.sched.reposition_new_cards(
+            card_ids,
+            starting_from=start,
+            step_size=step,
+            randomize=randomize,
+            shift_existing=shift_existing,
+        )
+    return None
+
+
+def _find_and_replace(params: dict) -> int:
+    """Find and replace text across note fields.
+
+    Input:  ``{"notes": [int], "search": str, "replacement": str,
+               "regex": bool = False, "field": str | None = None,
+               "matchCase": bool = False}``
+    Output: count of notes modified (int).
+
+    Confirmed signature (anki 25.9.2 collection.py:714):
+        find_and_replace(self, *, note_ids: Sequence[NoteId], search: str,
+                          replacement: str, regex: bool = False,
+                          field_name: str | None = None,
+                          match_case: bool = False) -> OpChangesWithCount
+
+    Returns the ``count`` field from the ``OpChangesWithCount`` result.
+    """
+    col = _col()
+    note_ids: list[int] = params.get("notes", [])
+    search: str = params.get("search", "")
+    replacement: str = params.get("replacement", "")
+    regex: bool = bool(params.get("regex", False))
+    field: str | None = params.get("field", None)
+    match_case: bool = bool(params.get("matchCase", False))
+
+    from anki.notes import NoteId  # noqa: PLC0415
+
+    with col_mod._col_lock:
+        result = col.find_and_replace(
+            note_ids=[NoteId(n) for n in note_ids],
+            search=search,
+            replacement=replacement,
+            regex=regex,
+            field_name=field if field else None,
+            match_case=match_case,
+        )
+    return int(result.count)
+
+
+def _find_duplicates(params: dict) -> list[dict]:
+    """Find notes with duplicate values in a given field.
+
+    Input:  ``{"field": str, "search": str = ""}``
+    Output: ``[{"value": str, "notes": [int]}, ...]``
+
+    Confirmed signature (anki 25.9.2 collection.py:738):
+        find_dupes(self, field_name: str, search: str = "") -> list[tuple[str, list]]
+
+    The native return is a list of ``(value_str, [note_ids])`` tuples, where
+    only values that appear in 2+ notes are included.  We convert to the
+    AnkiConnect-compatible JSON-friendly list of dicts.
+
+    Implementation note — anki.lang.current_i18n:
+        ``col.find_dupes()`` calls ``anki.utils.strip_html_media()`` which
+        delegates to ``anki.lang.current_i18n.strip_html()``.  Anki desktop
+        sets ``current_i18n`` via ``anki.lang.set_lang(lang)`` at startup; our
+        headless server never does this.  We initialise it lazily here using
+        the open collection's own ``_backend`` (a ``RustBackend`` instance),
+        which implements the same ``strip_html`` method.  This is safe to call
+        more than once — subsequent calls are no-ops once the reference is set.
+    """
+    import anki.lang  # noqa: PLC0415
+
+    col = _col()
+
+    # Lazy i18n init: required by find_dupes → strip_html_media → current_i18n
+    if anki.lang.current_i18n is None:
+        anki.lang.current_i18n = col._backend  # type: ignore[assignment]
+
+    field: str = params.get("field", "")
+    search: str = params.get("search", "")
+    # Read-only — no lock needed; find_dupes only reads the collection.
+    dupes = col.find_dupes(field, search)
+    return [{"value": val, "notes": [int(nid) for nid in nids]} for val, nids in dupes]
+
+
+def _clear_unused_tags(params: dict) -> int:
+    """Remove tags that are not used by any note.
+
+    Input:  ``{}``
+    Output: count of tags removed (int).
+
+    Confirmed signature (anki 25.9.2 tags.py):
+        clear_unused_tags(self) -> OpChangesWithCount
+    """
+    col = _col()
+    with col_mod._col_lock:
+        result = col.tags.clear_unused_tags()
+    return int(result.count)
+
+
+def _get_tags(params: dict) -> list[str]:
+    """Return all tags currently registered in the collection.
+
+    Input:  ``{}``
+    Output: ``list[str]``
+
+    Confirmed signature (anki 25.9.2 tags.py):
+        all(self) -> list[str]
+
+    Read-only — no lock needed.
+    """
+    col = _col()
+    return col.tags.all()
+
+
+# ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
 
@@ -925,9 +1161,22 @@ ACTIONS: dict[str, Any] = {
     # Admin — Decks (destructive + rename)
     "deleteDecks": _delete_decks,
     "renameDeck": _rename_deck,
-    # Scheduler
+    # Scheduler — suspend / unsuspend
     "suspend": _suspend,
     "unsuspend": _unsuspend,
+    # Scheduler — triage (bury / unbury / set due / forget / reposition)
+    "bury": _bury,
+    "unbury": _unbury,
+    "setDueDate": _set_due_date,
+    "forgetCards": _forget_cards,
+    "repositionNewCards": _reposition_new_cards,
+    "reposition": _reposition_new_cards,  # short alias
+    # Notes — find & replace / duplicates
+    "findAndReplace": _find_and_replace,
+    "findDuplicates": _find_duplicates,
+    # Tags — bulk cleanup + listing
+    "clearUnusedTags": _clear_unused_tags,
+    "getTags": _get_tags,
     # Models
     "modelNames": _model_names,
     "createModel": _create_model,

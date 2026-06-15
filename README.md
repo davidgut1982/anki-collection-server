@@ -148,16 +148,17 @@ implemented in subsequent steps.
 |----------|---------|
 | Meta | `version` |
 | Notes | `findNotes`, `notesInfo`, `addNote`, `updateNoteFields`, `addTags`, `removeTags` |
-| Notes (admin) | `deleteNotes` |
+| Notes (admin) | `deleteNotes`, `findAndReplace`, `findDuplicates` |
 | Cards | `findCards`, `cardsInfo`, `cardsToNotes`, `changeDeck` |
 | Cards (admin) | `findCardsPaginated` |
 | Decks | `createDeck`, `deckNames`, `getDeckStats` |
 | Decks (admin) | `deleteDecks`, `renameDeck` |
-| Scheduler | `suspend`, `unsuspend` |
+| Scheduler | `suspend`, `unsuspend`, `bury`, `unbury`, `setDueDate`, `forgetCards`, `repositionNewCards`, `reposition` |
 | Models | `modelNames`, `createModel`, `modelTemplates` |
 | Models (admin) | `modelFieldNames` |
 | Card mutation | `setSpecificValueOfCard` |
 | Media | `storeMediaFile`, `retrieveMediaFile`, `deleteMediaFile` |
+| Tags | `getTags`, `clearUnusedTags` |
 | Stats | `getNumCardsReviewedToday`, `getNumCardsReviewedByDay`, `getReviewsOfCards`, `getCollectionStatsHTML` |
 | Review GUI | `guiDeckReview`, `guiCurrentCard`, `guiStartCardTimer`, `guiShowAnswer`, `guiAnswerCard`, `guiUndo` |
 | Sync | `sync` |
