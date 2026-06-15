@@ -82,6 +82,23 @@ implemented in subsequent steps.
 | 12 | Pending | Cutover checkpoint |
 | 13 | Pending | 48 h soak + retire anki-headless |
 
+## Supported AnkiConnect actions
+
+| Category | Actions |
+|----------|---------|
+| Meta | `version` |
+| Notes | `findNotes`, `notesInfo`, `addNote`, `updateNoteFields`, `addTags`, `removeTags` |
+| Cards | `findCards`, `cardsInfo`, `cardsToNotes`, `changeDeck` |
+| Decks | `createDeck`, `deckNames`, `getDeckStats` |
+| Scheduler | `suspend`, `unsuspend` |
+| Models | `modelNames`, `createModel`, `modelTemplates` |
+| Card mutation | `setSpecificValueOfCard` |
+| Media | `storeMediaFile`, `retrieveMediaFile`, `deleteMediaFile` |
+| Stats | `getNumCardsReviewedToday`, `getNumCardsReviewedByDay`, `getReviewsOfCards`, `getCollectionStatsHTML` |
+| Review GUI | `guiDeckReview`, `guiCurrentCard`, `guiStartCardTimer`, `guiShowAnswer`, `guiAnswerCard`, `guiUndo` |
+| Sync | `sync` |
+| FSRS | `enableFsrs`, `isFsrsEnabled` |
+
 ## Version pinning
 
 `anki==25.9.2` (matches Anki Desktop 25.09.2 collection schema). Do not upgrade

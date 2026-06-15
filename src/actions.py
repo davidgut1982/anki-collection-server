@@ -492,6 +492,31 @@ def _create_model(params: dict) -> dict:
     return persisted if persisted is not None else notetype
 
 
+def _model_templates(params: dict) -> dict[str, dict[str, str]]:
+    """Return the templates for a note type.
+
+    AnkiConnect contract:
+      params:  {"modelName": "<name>"}
+      result:  {"<template name>": {"Front": "<qfmt>", "Back": "<afmt>"}, ...}
+               in template insertion order (preserving card.ord mapping).
+
+    The Tilts ``_card_payload`` helper calls this on every card load to build
+    template-aware per-side sound lists.  It selects the right template by
+    ``card.ord`` (0-based index into the ordered template list) and reads the
+    ``"Front"`` and ``"Back"`` keys to extract field names via regex.
+
+    Raises:
+        ValueError: if the model name does not exist (AnkiConnect-style error;
+                    the server converts this to ``{"result": null, "error": "..."}``)
+    """
+    col = _col()
+    model_name: str = params.get("modelName", "")
+    nt = col.models.by_name(model_name)
+    if nt is None:
+        raise ValueError(f"model was not found: {model_name}")
+    return {t["name"]: {"Front": t["qfmt"], "Back": t["afmt"]} for t in nt["tmpls"]}
+
+
 def _set_specific_value_of_card(params: dict) -> list:
     """Set specific card fields.
 
@@ -696,6 +721,7 @@ ACTIONS: dict[str, Any] = {
     # Models
     "modelNames": _model_names,
     "createModel": _create_model,
+    "modelTemplates": _model_templates,
     # Card field mutation
     "setSpecificValueOfCard": _set_specific_value_of_card,
     # Media

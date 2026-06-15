@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — modelTemplates action
+
+- **`src/actions.py` — `_model_templates(params)`**: implements the
+  `modelTemplates` AnkiConnect action.
+
+  **Params:** `{"modelName": "<name>"}`
+
+  **Result:** `{"<template name>": {"Front": "<qfmt>", "Back": "<afmt>"}, ...}`
+  one entry per template in insertion order (preserving `card.ord` → index mapping).
+
+  Uses `col.models.by_name(modelName)` and iterates `nt["tmpls"]`; raises
+  `ValueError("model was not found: <name>")` (AnkiConnect-style error, converted
+  to `{"result": null, "error": "..."}` by the server envelope) when the model
+  does not exist.
+
+  **Why:** Tilts' `_card_payload` (in `anki_review_bp.py`) calls this on every
+  card load to build template-aware per-side sound lists.  The call is
+  `client._invoke("modelTemplates", {"modelName": model_name})` and the result
+  is consumed as:
+  ```python
+  template_list = list(templates.values())   # ordered by card.ord
+  tmpl = template_list[card.ord]
+  qfmt = tmpl.get("Front", "") or ""
+  afmt = tmpl.get("Back", "") or ""
+  ```
+  Without this action, every card load logged
+  `WARNING unsupported action: 'modelTemplates'` and fell back to the
+  all-fields-order audio mapping.  With it, audio markers resolve in
+  template field order rather than Anki's stored field order — which matters
+  for multi-field card types where the front and back reference different
+  fields in different orders.
+
+- **`src/actions.py` — `"modelTemplates"` registered in `ACTIONS` dict.**
+
+- **`tests/test_actions.py` — `TestModelTemplates`** (6 tests, all pass):
+  - `test_known_model_returns_dict_keyed_by_template_name` — `"Basic"` → dict with ≥ 1 entry.
+  - `test_each_entry_has_front_and_back_strings` — every value has `"Front"` and `"Back"` as strings.
+  - `test_multi_template_model_returns_multiple_entries_in_order` — `"Basic (and reversed card)"` returns 2 entries in insertion order; Card 1 qfmt references `"Front"`, Card 2 qfmt references `"Back"`.
+  - `test_template_content_is_nonempty_for_real_model` — qfmt and afmt are non-empty.
+  - `test_latvian_vocab_model_in_fixture` — custom Latvian Vocab model round-trips.
+  - `test_unknown_model_raises_value_error` — non-existent model name raises `ValueError` matching `"model was not found"`.
+
+  `modelFieldNames` was NOT added: Tilts does not call it; skipping avoids dead-code scope creep.
+
 ### Fixed (QA-confirmed bug: getNumCardsReviewedToday returned 0)
 
 - **`src/actions.py` — `_get_num_cards_reviewed_today`**: `col.sched.day_cutoff` is the

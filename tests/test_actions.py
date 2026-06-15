@@ -720,7 +720,9 @@ class TestGetDeckStatsSubdeckRollup:
 
             stats = invoke("getDeckStats", decks=[parent_deck])
             assert isinstance(stats, dict), f"Expected dict, got {type(stats)}"
-            assert len(stats) == 1, f"Expected 1 entry, got {len(stats)}: {list(stats.keys())}"
+            assert len(stats) == 1, (
+                f"Expected 1 entry, got {len(stats)}: {list(stats.keys())}"
+            )
 
             key = list(stats.keys())[0]
             assert not key.startswith("missing:"), (
@@ -756,3 +758,104 @@ class TestGetDeckStatsSubdeckRollup:
             except Exception:
                 pass
             shutil.rmtree(private_dir, ignore_errors=True)
+
+
+class TestModelTemplates:
+    """Tests for the modelTemplates action.
+
+    AnkiConnect contract:
+      params:  {"modelName": "<name>"}
+      result:  {"<template name>": {"Front": "<qfmt>", "Back": "<afmt>"}, ...}
+               in template insertion order.
+
+    Tilts consumer (_card_payload in anki_review_bp.py) reads:
+      templates = client._invoke("modelTemplates", {"modelName": model_name})
+      # expects dict keyed by template name, each with "Front" and "Back" str values
+      template_list = list(templates.values())       # ordered by template index
+      tmpl = template_list[card.ord]                 # select by card ordinal
+      qfmt = tmpl.get("Front", "") or ""            # qfmt for field-name extraction
+      afmt = tmpl.get("Back", "") or ""             # afmt for field-name extraction
+    """
+
+    def test_known_model_returns_dict_keyed_by_template_name(self, col: None) -> None:
+        """modelTemplates for a real model returns a dict of template dicts."""
+        result = invoke("modelTemplates", modelName="Basic")
+        assert isinstance(result, dict), f"Expected dict, got {type(result)}"
+        assert len(result) >= 1, "Basic model must have at least one template"
+
+    def test_each_entry_has_front_and_back_strings(self, col: None) -> None:
+        """Each value in the result must have 'Front' and 'Back' str values.
+
+        This is the exact shape the Tilts _card_payload reads:
+          qfmt = tmpl.get("Front", "") or ""
+          afmt = tmpl.get("Back", "") or ""
+        """
+        result = invoke("modelTemplates", modelName="Basic")
+        for tmpl_name, tmpl_dict in result.items():
+            assert isinstance(tmpl_name, str), f"Key must be str, got {type(tmpl_name)}"
+            assert isinstance(tmpl_dict, dict), (
+                f"Value for {tmpl_name!r} must be dict, got {type(tmpl_dict)}"
+            )
+            assert "Front" in tmpl_dict, (
+                f"Missing 'Front' in {tmpl_name!r}: {tmpl_dict}"
+            )
+            assert "Back" in tmpl_dict, f"Missing 'Back' in {tmpl_name!r}: {tmpl_dict}"
+            assert isinstance(tmpl_dict["Front"], str), (
+                f"'Front' must be str, got {type(tmpl_dict['Front'])}"
+            )
+            assert isinstance(tmpl_dict["Back"], str), (
+                f"'Back' must be str, got {type(tmpl_dict['Back'])}"
+            )
+
+    def test_multi_template_model_returns_multiple_entries_in_order(
+        self, col: None
+    ) -> None:
+        """'Basic (and reversed card)' has 2 templates; both must appear in insertion order.
+
+        Tilts uses list(templates.values())[card.ord] to select by ordinal,
+        so order must be preserved (Card 1 at index 0, Card 2 at index 1).
+        """
+        result = invoke("modelTemplates", modelName="Basic (and reversed card)")
+        assert isinstance(result, dict)
+        assert len(result) == 2, (
+            f"Expected 2 templates, got {len(result)}: {list(result.keys())}"
+        )
+
+        # Must be in insertion order: Card 1 (ord=0) first, Card 2 (ord=1) second
+        template_list = list(result.values())
+        # Card 1: qfmt renders the Front field (question: Front -> Back)
+        assert "Front" in template_list[0]["Front"], (
+            f"Card 1 qfmt should reference 'Front': {template_list[0]['Front']!r}"
+        )
+        # Card 2: qfmt renders the Back field (reversed: Back -> Front)
+        assert "Back" in template_list[1]["Front"], (
+            f"Card 2 qfmt should reference 'Back': {template_list[1]['Front']!r}"
+        )
+
+    def test_template_content_is_nonempty_for_real_model(self, col: None) -> None:
+        """Template qfmt/afmt from the fixture are non-empty strings."""
+        result = invoke("modelTemplates", modelName="Basic")
+        tmpl = list(result.values())[0]
+        assert tmpl["Front"], "qfmt (Front) should be non-empty for Basic model"
+        assert tmpl["Back"], "afmt (Back) should be non-empty for Basic model"
+
+    def test_latvian_vocab_model_in_fixture(self, col: None) -> None:
+        """The fixture contains a 'Latvian Vocab' model; verify it round-trips."""
+        model_names = invoke("modelNames")
+        if "Latvian Vocab" not in model_names:
+            pytest.skip("Latvian Vocab model not present in this fixture")
+        result = invoke("modelTemplates", modelName="Latvian Vocab")
+        assert isinstance(result, dict)
+        assert len(result) >= 1
+        tmpl = list(result.values())[0]
+        assert "Front" in tmpl
+        assert "Back" in tmpl
+
+    def test_unknown_model_raises_value_error(self, col: None) -> None:
+        """modelTemplates for a non-existent model must raise ValueError.
+
+        The server converts ValueError to {"result": null, "error": "..."},
+        which Tilts' _get_model_templates catches and treats as a fallback.
+        """
+        with pytest.raises(ValueError, match="model was not found"):
+            invoke("modelTemplates", modelName="NonExistentModelXYZ_acs_test")
