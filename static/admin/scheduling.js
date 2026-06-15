@@ -14,9 +14,10 @@
  *
  * FSRS panel:
  *   - isFsrsEnabled -> show/hide enable button.
- *   - getFsrsParams (deck=first preset) -> display retention + param vector.
+ *   - desiredRetention + fsrsParams6/fsrsParams5 are read DIRECTLY from the
+ *     selected preset's config dict (currentConfig) — no getFsrsParams call.
  *   - Enable FSRS button -> confirm -> enableFsrs(optimize=true).
- *   - Save retention -> confirm -> setDesiredRetention.
+ *   - Save retention -> confirm -> setDesiredRetention({configId, retention}).
  *   - Compute optimal -> computeOptimalRetention -> display suggestion.
  */
 
@@ -359,34 +360,28 @@
         fsrsEnabledNote.hidden = true;
       }
 
-      // Load FSRS params for the current preset's deck id
-      // We use the preset's id as a proxy: find first deck using this preset
-      // by using the preset name as a lookup. Fallback to "Default".
-      const deckName = currentConfig.name || "Default";
-      let fsrsParams = null;
-      try {
-        fsrsParams = await acsInvoke("getFsrsParams", { deck: deckName });
-      } catch (_) {
-        // preset name may not match a deck name; fall back to default
-        try {
-          fsrsParams = await acsInvoke("getFsrsParams", { deck: "Default" });
-        } catch (e2) {
-          // best effort
-          fsrsParams = null;
-        }
-      }
-
-      if (fsrsParams) {
-        // Desired retention
-        desiredRetention.value = (fsrsParams.desiredRetention || 0.9).toFixed(2);
+      // Read FSRS params directly from the already-loaded preset config dict.
+      // desiredRetention, fsrsParams6, fsrsParams5, and fsrsWeights are all
+      // top-level keys in the config dict returned by getDeckConfigs — no
+      // extra round-trip to getFsrsParams is needed and avoids the
+      // "Deck not found: '<preset name>'" error that occurs when a preset name
+      // does not match any deck name.
+      if (currentConfig) {
+        const retention = typeof currentConfig.desiredRetention === "number"
+          ? currentConfig.desiredRetention
+          : 0.9;
+        desiredRetention.value = retention.toFixed(2);
         fsrsRetentionSection.hidden = false;
         retentionStatus.textContent = "";
 
-        // FSRS param vector
-        renderFsrsParams(fsrsParams.params || []);
+        // Prefer FSRS-6 (21 params), fall back to FSRS-5 (17 params) or legacy weights
+        const params = currentConfig.fsrsParams6
+          || currentConfig.fsrsParams5
+          || currentConfig.fsrsWeights
+          || [];
+        renderFsrsParams(params);
         fsrsParamsSection.hidden = false;
 
-        // Compute optimal retention section
         fsrsOptimalSection.hidden = false;
       }
     } catch (err) {
@@ -480,22 +475,19 @@
 
     saveRetentionBtn.disabled = true;
     try {
-      // setDesiredRetention takes a deck name; find the matching deck or use Default
-      const deckName = currentConfig.name || "Default";
-      let invoked = false;
-      try {
+      // Use configId (preset id) — avoids "Deck not found" when a preset name
+      // does not match any deck name.  Falls back to deck name for backward
+      // compatibility if configId is somehow absent.
+      const configId = currentConfig && currentConfig.id;
+      if (configId != null) {
+        await acsInvoke("setDesiredRetention", { configId, retention: val });
+      } else {
+        const deckName = (currentConfig && currentConfig.name) || "Default";
         await acsInvoke("setDesiredRetention", { deck: deckName, retention: val });
-        invoked = true;
-      } catch (_) {
-        // preset name != deck name; try Default
-        await acsInvoke("setDesiredRetention", { deck: "Default", retention: val });
-        invoked = true;
       }
-      if (invoked) {
-        notify(retentionStatus, "Retention saved: " + val.toFixed(2), "ok");
-        // Also update the stored config's desiredRetention so save-config round-trips stay consistent
-        if (currentConfig) currentConfig.desiredRetention = val;
-      }
+      notify(retentionStatus, "Retention saved: " + val.toFixed(2), "ok");
+      // Also update the stored config's desiredRetention so save-config round-trips stay consistent
+      if (currentConfig) currentConfig.desiredRetention = val;
     } catch (err) {
       notify(retentionStatus, "Save failed: " + err.message, "err");
     } finally {

@@ -1398,9 +1398,10 @@ def _update_deck_config(params: dict) -> None:
 
 
 def _get_fsrs_params(params: dict) -> dict:
-    """Return the FSRS parameters and desired retention for a deck.
+    """Return the FSRS parameters and desired retention for a preset or deck.
 
-    Input:  ``{"deck": int|str}``
+    Input:  ``{"configId": int}``         (preferred — resolves by preset id)
+         or ``{"deck": int|str}``         (legacy — resolves via deck name/id)
     Output: ``{"params": list[float], "desiredRetention": float}``
 
     ``params`` is the FSRS weight vector (21 floats for FSRS-6, or 17 for
@@ -1412,12 +1413,26 @@ def _get_fsrs_params(params: dict) -> dict:
     Read-only — no lock needed.
     """
     col = _col()
-    deck_param = params.get("deck", "Default")
-    did = _resolve_deck_id(deck_param)
+    config_id = params.get("configId")
+    if config_id is not None:
+        config_id_int = int(config_id)
+        cfg: dict | None = None
+        for c in col.decks.all_config():
+            if c["id"] == config_id_int:
+                cfg = dict(c)
+                break
+        if cfg is None:
+            raise ValueError(
+                f"getFsrsParams: no preset with configId={config_id_int} — "
+                "use getDeckConfigs for valid preset ids."
+            )
+    else:
+        deck_param = params.get("deck", "Default")
+        did = _resolve_deck_id(deck_param)
 
-    from anki.decks import DeckId  # noqa: PLC0415
+        from anki.decks import DeckId  # noqa: PLC0415
 
-    cfg = col.decks.config_dict_for_deck_id(DeckId(did))
+        cfg = col.decks.config_dict_for_deck_id(DeckId(did))
 
     # Prefer FSRS-6 (21 params); fall back to FSRS-5 (17 params)
     fsrs_params = cfg.get("fsrsParams6") or cfg.get("fsrsParams5") or []
@@ -1434,11 +1449,53 @@ _RETENTION_MIN = 0.70
 _RETENTION_MAX = 0.97
 
 
+def _resolve_config_id(params: dict) -> dict:
+    """Resolve a preset config dict from params containing ``configId`` or ``deck``.
+
+    Accepts (in priority order):
+    1. ``configId`` (int) — directly identifies the preset by id.
+    2. ``deck``     (int|str) — deck name or id; resolves to the deck's preset.
+
+    Returns the raw config dict for the resolved preset.
+
+    Raises
+    ------
+    ValueError
+        If ``configId`` is not found among existing presets, or if the deck
+        name/id cannot be resolved.
+    """
+    col = _col()
+    config_id = params.get("configId")
+    if config_id is not None:
+        config_id_int = int(config_id)
+        for cfg in col.decks.all_config():
+            if cfg["id"] == config_id_int:
+                return dict(cfg)
+        raise ValueError(
+            f"setDesiredRetention: no preset with configId={config_id_int} — "
+            "use getDeckConfigs for valid preset ids."
+        )
+
+    # Fall back to deck-based resolution
+    deck_param = params.get("deck", "Default")
+    did = _resolve_deck_id(deck_param)
+
+    from anki.decks import DeckId  # noqa: PLC0415
+
+    return col.decks.config_dict_for_deck_id(DeckId(did))
+
+
 def _set_desired_retention(params: dict) -> None:
     """Set the desired retention for a deck's configuration preset.
 
-    Input:  ``{"deck": int|str, "retention": float}``
+    Input:  ``{"configId": int, "retention": float}``
+         or ``{"deck": int|str, "retention": float}``   (backward-compatible)
     Output: null
+
+    ``configId`` (preferred) directly identifies the preset by id.  When
+    absent, ``deck`` (name or id) is used to resolve the preset — this is the
+    legacy path and may raise "Deck not found" when a preset name does not
+    match any deck name.
 
     ``retention`` must be in [0.70, 0.97].  Values outside this range raise
     ``ValueError`` — Anki's own UI enforces the same bounds.
@@ -1448,10 +1505,10 @@ def _set_desired_retention(params: dict) -> None:
     Raises
     ------
     ValueError
-        If ``retention`` is outside [0.70, 0.97].
+        If ``retention`` is outside [0.70, 0.97], or if the preset/deck cannot
+        be resolved.
     """
     col = _col()
-    deck_param = params.get("deck", "Default")
     retention: float = float(params.get("retention", 0.9))
 
     if retention < _RETENTION_MIN or retention > _RETENTION_MAX:
@@ -1461,11 +1518,7 @@ def _set_desired_retention(params: dict) -> None:
             "Anki's scheduler requires this bound."
         )
 
-    did = _resolve_deck_id(deck_param)
-
-    from anki.decks import DeckId  # noqa: PLC0415
-
-    cfg = col.decks.config_dict_for_deck_id(DeckId(did))
+    cfg = _resolve_config_id(params)
     cfg["desiredRetention"] = retention
 
     with col_mod._col_lock:

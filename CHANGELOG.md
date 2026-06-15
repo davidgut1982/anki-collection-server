@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — scheduling panel FSRS preset-name bug (feat/admin-actions)
+
+- **BUG — scheduling.js FSRS panel**: Removed `getFsrsParams({deck: presetName})`
+  call that raised "Deck not found: '<preset name>'" on every preset selection
+  when the preset name did not match any deck name (e.g. "Latvian Basic").
+  The FSRS panel now reads `desiredRetention` and `fsrsParams6`/`fsrsParams5`/
+  `fsrsWeights` directly from the already-loaded `currentConfig` dict (populated
+  by `getDeckConfigs`) — no extra round-trip needed and no spurious server ERROR.
+
+- **actions.py `setDesiredRetention`**: Added `configId` (preset id) parameter
+  so the UI can write to the correct preset without resolving through a deck name.
+  Legacy `deck` parameter still accepted for backward compatibility.  New helper
+  `_resolve_config_id()` shared between `setDesiredRetention` and `getFsrsParams`.
+
+- **actions.py `getFsrsParams`**: Added optional `configId` parameter so callers
+  can look up FSRS params for a specific preset without needing a deck name.
+  Falls back to legacy `deck` parameter when `configId` is absent.
+
+- **tests/test_admin_scheduling_actions.py**: Added `TestSetDesiredRetention`
+  cases for `configId` path (persists, visible via getDeckConfig, rejects bad id,
+  still enforces retention bounds) and new `TestGetFsrsParamsByConfigId` class
+  (matches deck-path result, rejects non-existent configId). Test count: 32 → 42.
+
 ### Fixed — Code Critic remediation (feat/admin-actions)
 
 - **HIGH XSS — diagnostics.js summary strip**: Added `escHtml()` helper (mirrors

@@ -443,6 +443,76 @@ class TestSetDesiredRetention:
         with pytest.raises(ValueError, match="not found"):
             invoke("setDesiredRetention", deck="__nonexistent_xzq__", retention=0.85)
 
+    # --- configId path -------------------------------------------------------
+
+    def test_by_config_id_persists(self, destructive_col: None) -> None:
+        """setDesiredRetention({configId, retention}) writes to the correct preset."""
+        # Resolve the Default preset's id via getDeckConfigs
+        presets = invoke("getDeckConfigs")
+        default_preset = next(p for p in presets if p["name"] == "Default")
+        config_id = default_preset["id"]
+
+        result = invoke("setDesiredRetention", configId=config_id, retention=0.88)
+        assert result is None
+
+        # Read back via getFsrsParams (by deck name) to confirm the write
+        after = invoke("getFsrsParams", deck="Default")
+        assert abs(after["desiredRetention"] - 0.88) < 1e-6, (
+            f"Expected desiredRetention=0.88 after configId write, "
+            f"got {after['desiredRetention']}"
+        )
+
+    def test_by_config_id_visible_via_get_deck_config(self, destructive_col: None) -> None:
+        """setDesiredRetention by configId must also be visible via getDeckConfig."""
+        presets = invoke("getDeckConfigs")
+        default_preset = next(p for p in presets if p["name"] == "Default")
+        config_id = default_preset["id"]
+
+        invoke("setDesiredRetention", configId=config_id, retention=0.91)
+
+        after = invoke("getDeckConfig", deck="Default")
+        assert abs(after["desired_retention"] - 0.91) < 1e-6, (
+            f"Expected desired_retention=0.91, got {after['desired_retention']}"
+        )
+
+    def test_nonexistent_config_id_raises(self, destructive_col: None) -> None:
+        """setDesiredRetention with a non-existent configId must raise ValueError."""
+        with pytest.raises(ValueError, match="configId=99999"):
+            invoke("setDesiredRetention", configId=99999, retention=0.85)
+
+    def test_config_id_range_validation_still_applies(self, destructive_col: None) -> None:
+        """configId path still enforces retention bounds."""
+        presets = invoke("getDeckConfigs")
+        default_preset = next(p for p in presets if p["name"] == "Default")
+        config_id = default_preset["id"]
+
+        with pytest.raises(ValueError, match="out of range"):
+            invoke("setDesiredRetention", configId=config_id, retention=0.5)
+
+
+# ===========================================================================
+# getFsrsParams — configId path
+# ===========================================================================
+
+
+class TestGetFsrsParamsByConfigId:
+    def test_by_config_id_matches_deck_result(self, destructive_col: None) -> None:
+        """getFsrsParams by configId must return the same data as by deck name."""
+        presets = invoke("getDeckConfigs")
+        default_preset = next(p for p in presets if p["name"] == "Default")
+        config_id = default_preset["id"]
+
+        by_deck = invoke("getFsrsParams", deck="Default")
+        by_config_id = invoke("getFsrsParams", configId=config_id)
+
+        assert by_config_id["params"] == by_deck["params"]
+        assert abs(by_config_id["desiredRetention"] - by_deck["desiredRetention"]) < 1e-9
+
+    def test_nonexistent_config_id_raises(self, destructive_col: None) -> None:
+        """getFsrsParams with a non-existent configId must raise ValueError."""
+        with pytest.raises(ValueError, match="configId=99999"):
+            invoke("getFsrsParams", configId=99999)
+
 
 # ===========================================================================
 # computeOptimalRetention
