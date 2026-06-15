@@ -1,0 +1,246 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Browse{% endblock %}
+
+{% block content %}
+<div class="page-header browse-page-header">
+  <h2 class="page-title">Card &amp; Note Browser</h2>
+</div>
+
+{# ------------------------------------------------------------------ #}
+{# Search bar                                                          #}
+{# ------------------------------------------------------------------ #}
+<section class="card browse-search-card">
+  <form id="search-form" class="browse-search-row" autocomplete="off">
+    <input
+      id="search-input"
+      type="text"
+      class="browse-search-input"
+      placeholder='e.g. deck:"Latvian" is:due'
+      value=""
+      aria-label="Anki search query"
+    />
+    <select id="page-size-select" class="browse-page-size" title="Results per page">
+      <option value="25">25</option>
+      <option value="50" selected>50</option>
+      <option value="100">100</option>
+      <option value="200">200</option>
+    </select>
+    <button type="submit" class="btn btn-primary">Search</button>
+  </form>
+  <div class="browse-search-help">
+    <span class="help-toggle" id="help-toggle" tabindex="0" role="button" aria-expanded="false">
+      Search help &#9660;
+    </span>
+    <div class="help-body" id="help-body" hidden>
+      <ul class="help-list">
+        <li><code>deck:"My Deck"</code> &mdash; cards in a specific deck</li>
+        <li><code>tag:important</code> &mdash; cards with a tag</li>
+        <li><code>is:due</code> &nbsp;<code>is:new</code> &nbsp;<code>is:suspended</code> &nbsp;<code>is:buried</code></li>
+        <li><code>prop:ivl&gt;30</code> &mdash; interval &gt; 30 days</li>
+        <li><code>added:7</code> &mdash; added in last 7 days</li>
+        <li><code>flag:1</code> &mdash; red flag (1&ndash;7)</li>
+        <li><code>dupe:Front</code> &mdash; duplicate first field</li>
+        <li><code>re:regex</code> &mdash; first field matches regex</li>
+        <li>Combine with spaces (AND) or <code>or</code> / <code>-</code> (NOT)</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+{# ------------------------------------------------------------------ #}
+{# Status / count bar                                                  #}
+{# ------------------------------------------------------------------ #}
+<div class="browse-status-bar" id="status-bar" hidden>
+  <span id="status-text">0 cards</span>
+  <span class="status-sep">|</span>
+  <span id="selection-text">0 selected</span>
+</div>
+
+{# ------------------------------------------------------------------ #}
+{# Bulk action toolbar                                                 #}
+{# ------------------------------------------------------------------ #}
+<div class="bulk-toolbar" id="bulk-toolbar" hidden>
+  <span class="bulk-label">Bulk actions on selected:</span>
+  <button class="btn btn-sm" data-bulk="suspend">Suspend</button>
+  <button class="btn btn-sm" data-bulk="unsuspend">Unsuspend</button>
+  <button class="btn btn-sm" data-bulk="bury">Bury</button>
+  <button class="btn btn-sm" data-bulk="unbury">Unbury</button>
+  <button class="btn btn-sm" data-bulk="setFlag">Set Flag&hellip;</button>
+  <button class="btn btn-sm" data-bulk="changeDeck">Change Deck&hellip;</button>
+  <button class="btn btn-sm" data-bulk="setDueDate">Set Due Date&hellip;</button>
+  <button class="btn btn-sm btn-warn" data-bulk="forgetCards">Forget&hellip;</button>
+  <button class="btn btn-sm" data-bulk="reposition">Reposition&hellip;</button>
+  <button class="btn btn-sm" data-bulk="addTags">Add Tags&hellip;</button>
+  <button class="btn btn-sm" data-bulk="removeTags">Remove Tags&hellip;</button>
+  <button class="btn btn-sm btn-danger" data-bulk="deleteNotes">Delete Notes&hellip;</button>
+</div>
+
+{# ------------------------------------------------------------------ #}
+{# Results table                                                       #}
+{# ------------------------------------------------------------------ #}
+<section class="card browse-results-card" id="results-section" hidden>
+  <div class="table-wrap">
+    <table class="browse-table" id="results-table">
+      <thead>
+        <tr>
+          <th class="col-check">
+            <input type="checkbox" id="select-all" title="Select all on page" />
+          </th>
+          <th class="col-sort" data-col="firstField">First Field</th>
+          <th class="col-sort" data-col="deckName">Deck</th>
+          <th class="col-sort" data-col="modelName">Note Type</th>
+          <th class="col-sort" data-col="due">Due</th>
+          <th class="col-sort" data-col="interval">Ivl</th>
+          <th class="col-sort" data-col="reps">Reps</th>
+          <th class="col-sort" data-col="lapses">Lapses</th>
+          <th class="col-sort" data-col="flags">Flag</th>
+          <th class="col-sort" data-col="state">State</th>
+        </tr>
+      </thead>
+      <tbody id="results-tbody"></tbody>
+    </table>
+  </div>
+  <div class="pagination-bar" id="pagination-bar">
+    <button class="btn btn-sm" id="prev-btn" disabled>&larr; Prev</button>
+    <span id="page-info">Page 1</span>
+    <button class="btn btn-sm" id="next-btn" disabled>Next &rarr;</button>
+  </div>
+</section>
+
+{# ------------------------------------------------------------------ #}
+{# Empty / loading states                                              #}
+{# ------------------------------------------------------------------ #}
+<div class="browse-empty" id="browse-empty" hidden>
+  <p>No cards matched your search.</p>
+</div>
+<div class="browse-loading" id="browse-loading" hidden>
+  <span class="spinner"></span> Searching&hellip;
+</div>
+
+{# ------------------------------------------------------------------ #}
+{# Find &amp; Replace mini-tool                                        #}
+{# ------------------------------------------------------------------ #}
+<section class="card fnr-card" id="fnr-section" hidden>
+  <h3 class="card-title">Find &amp; Replace <span class="fnr-scope" id="fnr-scope"></span></h3>
+  <div class="fnr-form">
+    <div class="fnr-row">
+      <label class="fnr-label">Field</label>
+      <select id="fnr-field" class="fnr-input">
+        <option value="">(all fields)</option>
+        {% for f in model_field_names %}
+        <option value="{{ f | e }}">{{ f | e }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="fnr-row">
+      <label class="fnr-label">Search</label>
+      <input id="fnr-search" type="text" class="fnr-input" placeholder="text to find" />
+    </div>
+    <div class="fnr-row">
+      <label class="fnr-label">Replace</label>
+      <input id="fnr-replace" type="text" class="fnr-input" placeholder="replacement text" />
+    </div>
+    <div class="fnr-row fnr-options">
+      <label class="check-label">
+        <input type="checkbox" id="fnr-regex" /> Regex
+      </label>
+      <label class="check-label">
+        <input type="checkbox" id="fnr-case" /> Match case
+      </label>
+    </div>
+    <button class="btn btn-primary" id="fnr-apply-btn">Apply to current search results</button>
+  </div>
+</section>
+
+{# ------------------------------------------------------------------ #}
+{# Find duplicates mini-tool                                           #}
+{# ------------------------------------------------------------------ #}
+<section class="card dupes-card" id="dupes-section" hidden>
+  <h3 class="card-title">Find Duplicates</h3>
+  <div class="dupes-form">
+    <label class="fnr-label">Field name</label>
+    <select id="dupes-field" class="fnr-input">
+      <option value="">(choose field)</option>
+      {% for f in model_field_names %}
+      <option value="{{ f | e }}">{{ f | e }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn btn-primary" id="dupes-run-btn">Find Duplicates</button>
+  </div>
+  <div id="dupes-results" class="dupes-results" hidden></div>
+</section>
+
+{# ------------------------------------------------------------------ #}
+{# Tool buttons                                                        #}
+{# ------------------------------------------------------------------ #}
+<div class="browse-tools" id="browse-tools" hidden>
+  <button class="btn btn-sm btn-outline" id="toggle-fnr-btn">Find &amp; Replace</button>
+  <button class="btn btn-sm btn-outline" id="toggle-dupes-btn">Find Duplicates</button>
+</div>
+
+{# ------------------------------------------------------------------ #}
+{# Note editor side-panel                                              #}
+{# ------------------------------------------------------------------ #}
+<div class="editor-overlay" id="editor-overlay" hidden aria-modal="true" role="dialog" aria-label="Note editor">
+  <div class="editor-panel">
+    <div class="editor-header">
+      <h3 class="editor-title">Note Editor</h3>
+      <button class="editor-close" id="editor-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="editor-body" id="editor-body">
+      <div class="editor-meta" id="editor-meta"></div>
+      <div id="editor-fields"></div>
+      <div class="editor-tags-row">
+        <label class="fnr-label">Tags</label>
+        <input id="editor-tags-input" type="text" class="fnr-input" placeholder="space-separated tags" />
+      </div>
+    </div>
+    <div class="editor-footer">
+      <button class="btn btn-primary" id="editor-save-btn">Save</button>
+      <button class="btn btn-danger" id="editor-delete-btn">Delete Note&hellip;</button>
+      <span id="editor-status" class="editor-status"></span>
+    </div>
+  </div>
+</div>
+
+{# ------------------------------------------------------------------ #}
+{# Confirm dialog                                                      #}
+{# ------------------------------------------------------------------ #}
+<div class="modal-overlay" id="confirm-overlay" hidden aria-modal="true" role="alertdialog">
+  <div class="modal-box">
+    <h3 class="modal-title" id="confirm-title">Confirm</h3>
+    <p class="modal-body" id="confirm-body"></p>
+    <div class="modal-footer">
+      <button class="btn btn-danger" id="confirm-ok">Confirm</button>
+      <button class="btn btn-sm" id="confirm-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+{# ------------------------------------------------------------------ #}
+{# Input prompt dialog                                                 #}
+{# ------------------------------------------------------------------ #}
+<div class="modal-overlay" id="prompt-overlay" hidden aria-modal="true" role="dialog">
+  <div class="modal-box">
+    <h3 class="modal-title" id="prompt-title">Input required</h3>
+    <div id="prompt-fields" class="prompt-fields"></div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="prompt-ok">OK</button>
+      <button class="btn btn-sm" id="prompt-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+{# Server-side data passed to JS #}
+<script id="browse-data" type="application/json">
+{
+  "deckNames": {{ deck_names | tojson }},
+  "allTags":   {{ all_tags   | tojson }}
+}
+</script>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='admin/browse.js') }}"></script>
+{% endblock %}

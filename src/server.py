@@ -67,18 +67,22 @@ AnkiConnect wire protocol:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import signal
 import sys
 import traceback
+from pathlib import Path
 from typing import Any
 
 from flask import Flask, jsonify, request
 from waitress import serve
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 import src.collection as col_mod
 from src.actions import ACTIONS
+from src.admin import admin_bp
 from src.fsrs import FSRS_ACTIONS
 from src.review_session import GUI_ACTIONS
 from src.sync import SYNC_ACTIONS
@@ -86,7 +90,58 @@ from src.sync import SYNC_ACTIONS
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-app = Flask(__name__)
+# ---------------------------------------------------------------------------
+# Resolve repo-root template and static directories.
+# ---------------------------------------------------------------------------
+# server.py lives at <repo>/src/server.py, so two levels up is <repo>/.
+# We set these explicitly rather than relying on Flask's default (which
+# resolves relative to the *package* directory, i.e. <repo>/src/) so that
+# the shared templates/ and static/ directories at the repo root are found
+# correctly whether the app is run via ``python -m src.server`` or from an
+# installed wheel.
+_REPO_ROOT = Path(__file__).parent.parent
+_TEMPLATE_FOLDER = str(_REPO_ROOT / "templates")
+_STATIC_FOLDER = str(_REPO_ROOT / "static")
+
+app = Flask(
+    __name__,
+    template_folder=_TEMPLATE_FOLDER,
+    static_folder=_STATIC_FOLDER,
+)
+
+# Secret key is required for Flask's session/cookie machinery (used by the
+# admin login flow to set signed cookies).  In production the value is
+# irrelevant for our auth scheme because we use a plain HttpOnly cookie
+# (not Flask's signed session cookie), but Flask requires it to be set.
+#
+# INVARIANT: secret_key is derived, not the raw ADMIN_TOKEN.
+# Using ADMIN_TOKEN directly as the secret key would expose it via Flask's
+# session-signing machinery.  We use a separate FLASK_SECRET_KEY env var if
+# set, otherwise derive a stable key from ADMIN_TOKEN via SHA-256 with a
+# domain-separation prefix so the two values are always distinct.
+_admin_token = os.environ.get("ADMIN_TOKEN", "")
+_flask_secret_key = os.environ.get("FLASK_SECRET_KEY", "")
+if _flask_secret_key:
+    app.secret_key = _flask_secret_key
+elif _admin_token:
+    app.secret_key = hashlib.sha256(
+        b"acs-flask-session:" + _admin_token.encode()
+    ).hexdigest()
+else:
+    app.secret_key = os.urandom(32)
+
+# Trust the X-Forwarded-Proto and X-Forwarded-Host headers set by the reverse
+# proxy (pfSense / nginx TLS termination) so that Flask sees https:// and sets
+# the Secure flag correctly on cookies.  x_proto=1 and x_host=1 mean we trust
+# exactly one hop of proxying.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)  # type: ignore[method-assign]
+
+# ---------------------------------------------------------------------------
+# Register the admin blueprint
+# ---------------------------------------------------------------------------
+# The blueprint gates itself at /admin and /admin/* — it does NOT touch
+# POST / (AnkiConnect) or GET /health.
+app.register_blueprint(admin_bp)
 
 # ---------------------------------------------------------------------------
 # Unified action dispatch table

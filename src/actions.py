@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import src.collection as col_mod
+from src.stats import STATS_ACTIONS
 
 log = logging.getLogger(__name__)
 
@@ -590,6 +591,211 @@ def _delete_media_file(params: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Admin — Notes / Decks (destructive write operations)
+# ---------------------------------------------------------------------------
+
+
+def _delete_notes(params: dict) -> None:
+    """Delete notes (and their cards) by note id.
+
+    Input: ``{"notes": [int]}``
+    Output: null
+
+    Empty list is tolerated as a no-op.  Uses ``col.remove_notes()`` which
+    deletes all cards belonging to each note in the same operation.
+
+    Wrap in lock: this is a write operation.
+    """
+    col = _col()
+    note_ids: list[int] = params.get("notes") or []
+    if not note_ids:
+        return None
+    from anki.notes import NoteId  # noqa: PLC0415
+
+    with col_mod._col_lock:
+        col.remove_notes([NoteId(n) for n in note_ids])
+    return None
+
+
+def _delete_decks(params: dict) -> None:
+    """Delete decks (and their cards) by id or name.
+
+    Input: ``{"decks": [int|str], "cardsToo": bool}``
+    Output: null
+
+    .. warning::
+        **DATA LOSS — permanent, unrecoverable.**
+
+        ``col.decks.remove()`` deletes:
+
+        1. Every named deck.
+        2. **ALL SUBDECKS** of each named deck (the entire subtree).
+        3. **ALL CARDS** (and their notes, if those notes have no remaining
+           cards) that live in any of the above decks.
+
+        There is no "keep cards" or "keep subdecks" variant in the
+        ``anki`` pip API (Anki 25.9.2).  The ``cardsToo`` parameter is
+        accepted for AnkiConnect wire-compatibility but is ignored — cards
+        are ALWAYS deleted.
+
+        Callers / UI layers MUST present an explicit confirmation step
+        (listing affected decks and an approximate card count) before
+        invoking this action.
+
+    - String entries are resolved via ``col.decks.id_for_name()``.
+    - Integer 1 (the built-in Default deck) is silently skipped — Anki does
+      not allow the Default deck to be removed.
+    - Non-existent deck names are silently skipped (idempotent).
+    - Wrap in lock: this is a write operation.
+    """
+    col = _col()
+    decks_param: list[int | str] = params.get("decks") or []
+    # cardsToo accepted but not used — remove() always deletes cards
+    _ = params.get("cardsToo", True)
+
+    from anki.decks import DeckId  # noqa: PLC0415
+
+    deck_ids: list[DeckId] = []
+    for d in decks_param:
+        if isinstance(d, str):
+            did = col.decks.id_for_name(d)
+            if did is None:
+                # Deck name not found — skip silently (idempotent)
+                log.warning("deleteDecks: deck not found by name %r — skipping", d)
+                continue
+            did_int = int(did)
+        else:
+            did_int = int(d)
+
+        if did_int == 1:
+            # Default deck (id=1) cannot be deleted; Anki forbids it.
+            log.warning(
+                "deleteDecks: refusing to delete Default deck (id=1) — skipping"
+            )
+            continue
+
+        deck_ids.append(DeckId(did_int))
+
+    if not deck_ids:
+        return None
+
+    with col_mod._col_lock:
+        col.decks.remove(deck_ids)
+    return None
+
+
+def _rename_deck(params: dict) -> None:
+    """Rename a deck.
+
+    Input: ``{"deck": int|str, "newName": str}``
+    Output: null
+
+    - ``deck`` may be an integer id or a string name.
+    - Raises ``ValueError`` if the deck is not found.
+    - Raises ``ValueError`` before calling rename if ``newName`` is already
+      in use by a different deck.  This avoids relying on the brittle
+      post-rename ``"+"``-suffix detection: anki 25.9.2's ``decks.rename()``
+      silently appends ``"+"`` on collision, but that heuristic false-positives
+      when the caller *legitimately* requests a name that ends in ``"+"``.
+      A pre-check against ``col.decks.id_for_name(new_name)`` is authoritative
+      and races only in the window between the check and the rename (acceptable
+      for a single-writer collection).
+    - Anki's ``decks.rename()`` automatically moves all child decks when a
+      parent is renamed (e.g. renaming "A" to "B" also renames "A::Sub" to
+      "B::Sub").  This behaviour is preserved here — callers do not need to
+      enumerate subdecks separately.
+    - Wrap in lock: this is a write operation.
+    """
+    col = _col()
+    deck_param: int | str = params.get("deck", "")
+    new_name: str = params.get("newName", "")
+
+    from anki.decks import DeckId  # noqa: PLC0415
+
+    if isinstance(deck_param, str):
+        did = col.decks.id_for_name(deck_param)
+        if did is None:
+            raise ValueError(f"Deck not found: {deck_param!r}")
+        did_int = int(did)
+    else:
+        did_int = int(deck_param)
+        # Verify it exists
+        existing = col.decks.get(DeckId(did_int))
+        if existing is None:
+            raise ValueError(f"Deck not found: id={did_int}")
+
+    # Pre-check: if a deck already exists under new_name and it is NOT the
+    # deck being renamed, refuse — this is a collision.
+    existing_target_id = col.decks.id_for_name(new_name)
+    if existing_target_id is not None and int(existing_target_id) != did_int:
+        raise ValueError(
+            f"Rename collision: a deck named {new_name!r} already exists. "
+            f"Rename or remove it first."
+        )
+
+    with col_mod._col_lock:
+        col.decks.rename(DeckId(did_int), new_name)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Admin — Models (read-only)
+# ---------------------------------------------------------------------------
+
+
+def _model_field_names(params: dict) -> list[str]:
+    """Return ordered field names for a note type.
+
+    Input: ``{"modelName": str}``
+    Output: ``list[str]``
+
+    Read-only — no lock needed.
+
+    Raises ``ValueError`` if the model is not found.
+    """
+    col = _col()
+    name: str = params.get("modelName", "")
+    nt = col.models.by_name(name)
+    if nt is None:
+        raise ValueError(f"model not found: {name!r}")
+    return [f["name"] for f in nt["flds"]]
+
+
+# ---------------------------------------------------------------------------
+# Admin — Cards (paginated browse, read-only)
+# ---------------------------------------------------------------------------
+
+
+def _find_cards_paginated(params: dict) -> dict:
+    """Return a paginated slice of card ids matching a search query.
+
+    Input:  ``{"query": str, "offset": int = 0, "limit": int = 100}``
+    Output: ``{"cards": [int], "total": int, "offset": int}``
+
+    - Runs the full ``col.find_cards(query)`` search and slices in Python;
+      this is consistent with how AnkiConnect implements pagination (no SQL
+      LIMIT/OFFSET, since Anki's search engine does not expose cursor-based
+      pagination).
+    - ``limit`` is clamped to a maximum of 500 to protect against very large
+      response payloads.
+    - Read-only — no lock needed.
+    """
+    col = _col()
+    query: str = params.get("query", "")
+    offset: int = max(0, int(params.get("offset", 0)))
+    limit: int = max(0, min(int(params.get("limit", 100)), 500))
+
+    all_ids = list(col.find_cards(query))
+    page = all_ids[offset : offset + limit]
+    return {
+        "cards": [int(cid) for cid in page],
+        "total": len(all_ids),
+        "offset": offset,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Stats
 # ---------------------------------------------------------------------------
 
@@ -693,6 +899,977 @@ def _get_collection_stats_html(params: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Card / Note triage — P0 admin actions
+# ---------------------------------------------------------------------------
+
+
+def _bury(params: dict) -> None:
+    """Bury cards so they do not appear until tomorrow.
+
+    Input:  ``{"cards": [int]}``
+    Output: null
+
+    Uses ``col.sched.bury_cards(ids, manual=True)`` — the ``manual=True``
+    flag sets ``BURY_USER`` mode (same as a manual bury from the reviewer),
+    distinct from ``BURY_SCHED`` (automatic sibling bury).
+
+    Confirmed signature (anki 25.9.2 scheduler/base.py:163):
+        bury_cards(self, ids: Sequence[CardId], manual: bool = True) -> OpChangesWithCount
+    """
+    col = _col()
+    card_ids: list[int] = params.get("cards", [])
+    with col_mod._col_lock:
+        col.sched.bury_cards(card_ids, manual=True)
+    return None
+
+
+def _unbury(params: dict) -> None:
+    """Unbury cards so they are available again today.
+
+    Input:  ``{"cards": [int]}``
+    Output: null
+
+    Uses ``col.sched.unbury_cards(ids)``.
+
+    Confirmed signature (anki 25.9.2 scheduler/base.py:143):
+        unbury_cards(self, ids: Sequence[CardId]) -> OpChanges
+    """
+    col = _col()
+    card_ids: list[int] = params.get("cards", [])
+    with col_mod._col_lock:
+        col.sched.unbury_cards(card_ids)
+    return None
+
+
+def _set_due_date(params: dict) -> None:
+    """Set the due date for cards using a day-spec string.
+
+    Input:  ``{"cards": [int], "days": str}``
+    Output: null
+
+    ``days`` is a non-empty string spec accepted by the Anki backend, e.g.
+    ``"1"``, ``"3"``, or ``"1-7"`` (random between 1 and 7 days).  Cards are
+    converted to review cards if they were new/learning.
+
+    Confirmed signature (anki 25.9.2 scheduler/base.py:205):
+        set_due_date(self, card_ids: Sequence[CardId], days: str,
+                     config_key: Config.String.V | None = None) -> OpChanges
+
+    Raises:
+        ValueError: if ``days`` is empty or not a string.
+    """
+    col = _col()
+    card_ids: list[int] = params.get("cards", [])
+    days: str = params.get("days", "")
+    if not isinstance(days, str) or not days.strip():
+        raise ValueError(
+            "setDueDate: 'days' must be a non-empty string (e.g. '1', '3-7')"
+        )
+    with col_mod._col_lock:
+        col.sched.set_due_date(card_ids, days)
+    return None
+
+
+def _forget_cards(params: dict) -> None:
+    """Reset cards to the new queue (forget review history).
+
+    Input:  ``{"cards": [int], "restorePosition": bool = False, "resetCounts": bool = False}``
+    Output: null
+
+    Equivalent to AnkiConnect's ``forgetCards`` action.
+
+    Confirmed signature (anki 25.9.2 scheduler/base.py:182):
+        schedule_cards_as_new(self, card_ids: Sequence[CardId], *,
+                               restore_position: bool = False,
+                               reset_counts: bool = False,
+                               context: ... | None = None) -> OpChanges
+    """
+    col = _col()
+    card_ids: list[int] = params.get("cards", [])
+    restore_position: bool = bool(params.get("restorePosition", False))
+    reset_counts: bool = bool(params.get("resetCounts", False))
+    with col_mod._col_lock:
+        col.sched.schedule_cards_as_new(
+            card_ids,
+            restore_position=restore_position,
+            reset_counts=reset_counts,
+        )
+    return None
+
+
+def _reposition_new_cards(params: dict) -> None:
+    """Reorder new cards within the new queue.
+
+    Input:  ``{"cards": [int], "start": int, "step": int = 1,
+               "randomize": bool = False, "shiftExisting": bool = True}``
+    Output: null
+
+    Also registered as ``"repositionNewCards"`` (AnkiConnect name) and
+    ``"reposition"`` (short alias).
+
+    Confirmed signature (anki 25.9.2 scheduler/base.py:247):
+        reposition_new_cards(self, card_ids: Sequence[CardId],
+                              starting_from: int, step_size: int,
+                              randomize: bool, shift_existing: bool) -> OpChangesWithCount
+
+    Note: all positional keyword args are required (no defaults in the backend).
+    """
+    col = _col()
+    card_ids: list[int] = params.get("cards", [])
+    start: int = int(params.get("start", 1))
+    step: int = int(params.get("step", 1))
+    randomize: bool = bool(params.get("randomize", False))
+    shift_existing: bool = bool(params.get("shiftExisting", False))
+    with col_mod._col_lock:
+        col.sched.reposition_new_cards(
+            card_ids,
+            starting_from=start,
+            step_size=step,
+            randomize=randomize,
+            shift_existing=shift_existing,
+        )
+    return None
+
+
+def _find_and_replace(params: dict) -> int:
+    """Find and replace text across note fields.
+
+    Input:  ``{"notes": [int], "search": str, "replacement": str,
+               "regex": bool = False, "field": str | None = None,
+               "matchCase": bool = False}``
+    Output: count of notes modified (int).
+
+    Confirmed signature (anki 25.9.2 collection.py:714):
+        find_and_replace(self, *, note_ids: Sequence[NoteId], search: str,
+                          replacement: str, regex: bool = False,
+                          field_name: str | None = None,
+                          match_case: bool = False) -> OpChangesWithCount
+
+    Returns the ``count`` field from the ``OpChangesWithCount`` result.
+    """
+    col = _col()
+    note_ids: list[int] = params.get("notes", [])
+    search: str = params.get("search", "")
+    replacement: str = params.get("replacement", "")
+    regex: bool = bool(params.get("regex", False))
+    field: str | None = params.get("field", None)
+    match_case: bool = bool(params.get("matchCase", False))
+
+    from anki.notes import NoteId  # noqa: PLC0415
+
+    with col_mod._col_lock:
+        result = col.find_and_replace(
+            note_ids=[NoteId(n) for n in note_ids],
+            search=search,
+            replacement=replacement,
+            regex=regex,
+            field_name=field if field else None,
+            match_case=match_case,
+        )
+    return int(result.count)
+
+
+def _find_duplicates(params: dict) -> list[dict]:
+    """Find notes with duplicate values in a given field.
+
+    Input:  ``{"field": str, "search": str = ""}``
+    Output: ``[{"value": str, "notes": [int]}, ...]``
+
+    Confirmed signature (anki 25.9.2 collection.py:738):
+        find_dupes(self, field_name: str, search: str = "") -> list[tuple[str, list]]
+
+    The native return is a list of ``(value_str, [note_ids])`` tuples, where
+    only values that appear in 2+ notes are included.  We convert to the
+    AnkiConnect-compatible JSON-friendly list of dicts.
+
+    Implementation note — anki.lang.current_i18n:
+        ``col.find_dupes()`` calls ``anki.utils.strip_html_media()`` which
+        delegates to ``anki.lang.current_i18n.strip_html()``.  Anki desktop
+        sets ``current_i18n`` via ``anki.lang.set_lang(lang)`` at startup; our
+        headless server never does this.  We initialise it lazily here using
+        the open collection's own ``_backend`` (a ``RustBackend`` instance),
+        which implements the same ``strip_html`` method.  This is safe to call
+        more than once — subsequent calls are no-ops once the reference is set.
+    """
+    import anki.lang  # noqa: PLC0415
+
+    col = _col()
+
+    # Lazy i18n init: required by find_dupes → strip_html_media → current_i18n
+    if anki.lang.current_i18n is None:
+        anki.lang.current_i18n = col._backend  # type: ignore[assignment]
+
+    field: str = params.get("field", "")
+    search: str = params.get("search", "")
+    # Read-only — no lock needed; find_dupes only reads the collection.
+    dupes = col.find_dupes(field, search)
+    return [{"value": val, "notes": [int(nid) for nid in nids]} for val, nids in dupes]
+
+
+def _clear_unused_tags(params: dict) -> int:
+    """Remove tags that are not used by any note.
+
+    Input:  ``{}``
+    Output: count of tags removed (int).
+
+    Confirmed signature (anki 25.9.2 tags.py):
+        clear_unused_tags(self) -> OpChangesWithCount
+    """
+    col = _col()
+    with col_mod._col_lock:
+        result = col.tags.clear_unused_tags()
+    return int(result.count)
+
+
+def _get_tags(params: dict) -> list[str]:
+    """Return all tags currently registered in the collection.
+
+    Input:  ``{}``
+    Output: ``list[str]``
+
+    Confirmed signature (anki 25.9.2 tags.py):
+        all(self) -> list[str]
+
+    Read-only — no lock needed.
+    """
+    col = _col()
+    return col.tags.all()
+
+
+# ---------------------------------------------------------------------------
+# Scheduling control — deck config read/write + FSRS helpers  (P0 admin A3)
+# ---------------------------------------------------------------------------
+
+#
+# Confirmed deck-config key structure (anki 25.9.2, empirically inspected):
+#
+# Top-level:
+#   id, name, mod, usn, dyn
+#   new: {bury, delays, initialFactor, ints, order, perDay}
+#   rev: {bury, ease4, hardFactor, ivlFct, maxIvl, perDay}
+#   lapse: {delays, leechAction, leechFails, minInt, mult}
+#   desiredRetention (float)   — FSRS target retention
+#   fsrsParams5 (list[float])  — FSRS-5 weight vector (first 17 params)
+#   fsrsParams6 (list[float])  — FSRS-6 weight vector (21 params, preferred)
+#   fsrsWeights (list[float])  — legacy alias; same as fsrsParams6 when set
+#   sm2Retention (float)       — SM-2 retention target
+#   buryInterdayLearning, interdayLearningMix, maxTaken, newGatherPriority,
+#   newMix, newPerDayMinimum, newSortOrder, reviewOrder, autoplay, replayq,
+#   timer, weightSearch, ignoreRevlogsBeforeDate, easyDaysPercentages,
+#   answerAction, questionAction, secondsToShowAnswer, secondsToShowQuestion,
+#   stopTimerOnAnswer, waitForAudio
+#
+# NOTE: there is NO "desired_retention" (snake_case) key.  The camelCase
+# "desiredRetention" is the real key.  Similarly "fsrsParams6" not "fsrs_params_6".
+
+
+def _resolve_deck_id(deck: int | str) -> int:
+    """Resolve a deck name or id to an integer deck id.
+
+    Parameters
+    ----------
+    deck:
+        Either an integer deck id or a string deck name.
+
+    Returns
+    -------
+    int
+        The resolved deck id.
+
+    Raises
+    ------
+    ValueError
+        If the deck name is not found.
+    """
+    col = _col()
+    if isinstance(deck, str):
+        did = col.decks.id_for_name(deck)
+        if did is None:
+            raise ValueError(f"Deck not found: {deck!r}")
+        return int(did)
+    return int(deck)
+
+
+def _get_deck_config(params: dict) -> dict:
+    """Return the resolved deck configuration preset for a deck.
+
+    Input:  ``{"deck": int|str}``
+    Output: human-relevant fields + full raw config under ``"config"``
+
+    Resolved field names (empirically confirmed against anki 25.9.2):
+      - new_per_day          ← cfg["new"]["perDay"]
+      - rev_per_day          ← cfg["rev"]["perDay"]
+      - learning_steps       ← cfg["new"]["delays"]
+      - relearn_steps        ← cfg["lapse"]["delays"]
+      - graduating_interval  ← cfg["new"]["ints"][1]  (good interval, days)
+      - easy_interval        ← cfg["new"]["ints"][0]  (immediate easy exit, days)
+      - max_interval         ← cfg["rev"]["maxIvl"]
+      - bury_new             ← cfg["new"]["bury"]
+      - bury_reviews         ← cfg["rev"]["bury"]
+      - leech_fails          ← cfg["lapse"]["leechFails"]
+      - leech_action         ← cfg["lapse"]["leechAction"]
+      - new_interval_mult    ← cfg["lapse"]["mult"]   (interval mult after lapse)
+      - min_interval         ← cfg["lapse"]["minInt"]  (min interval after lapse, days)
+      - initial_factor       ← cfg["new"]["initialFactor"]  (SM-2 ease factor * 10)
+      - desired_retention    ← cfg["desiredRetention"]
+      - fsrs_params          ← cfg["fsrsParams6"] (falls back to fsrsParams5 if empty)
+
+    Also returns the preset ``id`` and ``name``, plus the full raw dict under
+    the ``"config"`` key for callers that need less-common fields.
+
+    Read-only — no lock needed.
+    """
+    col = _col()
+    deck_param = params.get("deck", "Default")
+    did = _resolve_deck_id(deck_param)
+
+    from anki.decks import DeckId  # noqa: PLC0415
+
+    cfg = col.decks.config_dict_for_deck_id(DeckId(did))
+
+    new = cfg.get("new", {})
+    rev = cfg.get("rev", {})
+    lapse = cfg.get("lapse", {})
+
+    # ints: [immediate_easy_days, graduating_days, 0_unused] in the fixture
+    ints = new.get("ints", [1, 4, 0])
+    easy_interval = ints[0] if len(ints) > 0 else 1
+    graduating_interval = ints[1] if len(ints) > 1 else 4
+
+    # FSRS params: prefer fsrsParams6 (21 params), fall back to fsrsParams5 (17 params)
+    fsrs_params = cfg.get("fsrsParams6") or cfg.get("fsrsParams5") or []
+
+    return {
+        "id": cfg.get("id"),
+        "name": cfg.get("name"),
+        # New card options
+        "new_per_day": new.get("perDay"),
+        "learning_steps": new.get("delays"),
+        "graduating_interval": graduating_interval,
+        "easy_interval": easy_interval,
+        "initial_factor": new.get("initialFactor"),
+        # Review options
+        "rev_per_day": rev.get("perDay"),
+        "max_interval": rev.get("maxIvl"),
+        # Bury flags
+        "bury_new": new.get("bury"),
+        "bury_reviews": rev.get("bury"),
+        # Lapse options
+        "relearn_steps": lapse.get("delays"),
+        "leech_fails": lapse.get("leechFails"),
+        "leech_action": lapse.get("leechAction"),
+        "new_interval_mult": lapse.get("mult"),
+        "min_interval": lapse.get("minInt"),
+        # FSRS
+        "desired_retention": cfg.get("desiredRetention"),
+        "fsrs_params": fsrs_params,
+        # Full raw dict for callers needing extended fields
+        "config": dict(cfg),
+    }
+
+
+def _get_deck_configs(params: dict) -> list[dict]:  # noqa: ARG001
+    """Return all deck configuration presets (for a preset-selector UI).
+
+    Input:  ``{}``
+    Output: list of raw DeckConfigDict dicts
+
+    Each entry has the full key set documented above.  Callers can use this
+    to populate a preset selector and then pass a modified dict to
+    ``updateDeckConfig``.
+
+    Read-only — no lock needed.
+    """
+    col = _col()
+    return list(col.decks.all_config())
+
+
+def _update_deck_config(params: dict) -> None:
+    """Update (save) a deck configuration preset.
+
+    Input:  ``{"config": <full DeckConfigDict>}``
+    Output: null
+
+    The caller must supply the full config dict (including ``"id"`` and all
+    fields), typically obtained from ``getDeckConfig`` or ``getDeckConfigs``
+    and then modified.  The ``"id"`` field is required — if missing or
+    non-integer a ``ValueError`` is raised.  The id must match an existing
+    preset; unknown ids are rejected to prevent ghost-preset creation.
+
+    When scheduling sub-dict keys are present they are validated for type
+    before the write:
+
+    * ``new.perDay``, ``rev.perDay``, ``rev.maxIvl``, ``lapse.leechFails``,
+      ``lapse.leechAction``, ``lapse.minInt`` → int
+    * ``lapse.mult``, ``rev.ivlFct``, ``rev.ease4``, ``rev.hardFactor``
+      → float (bare int is coerced)
+    * ``new.delays``, ``lapse.delays`` → list
+
+    Only keys that are present in the submitted dict are validated; absent
+    keys are left untouched (Anki merges sparse updates).
+
+    Wrap in lock: this is a write operation.
+
+    Raises
+    ------
+    ValueError
+        If the ``"id"`` field is absent, non-integer, or does not match any
+        existing preset; or if a scheduling field has the wrong type.
+    """
+    cfg: dict = params.get("config", {})
+
+    # --- id presence and type ------------------------------------------------
+    if "id" not in cfg:
+        raise ValueError(
+            "updateDeckConfig: config dict must contain an 'id' field. "
+            "Obtain the config via getDeckConfig or getDeckConfigs, modify it, "
+            "and pass the full dict back."
+        )
+    if not isinstance(cfg["id"], int):
+        raise ValueError(
+            f"updateDeckConfig: 'id' must be an int, got {type(cfg['id']).__name__!r}."
+        )
+
+    col = _col()
+
+    # --- reject unknown preset id (prevents ghost-preset creation) -----------
+    if not any(c["id"] == cfg["id"] for c in col.decks.all_config()):
+        raise ValueError(
+            f"updateDeckConfig: no preset with id={cfg['id']} — "
+            "use getDeckConfigs for valid ids."
+        )
+
+    # --- scheduling field type validation ------------------------------------
+    _INT_FIELDS: list[tuple[str, str]] = [
+        ("new", "perDay"),
+        ("rev", "perDay"),
+        ("rev", "maxIvl"),
+        ("lapse", "leechFails"),
+        ("lapse", "leechAction"),
+        ("lapse", "minInt"),
+    ]
+    _FLOAT_FIELDS: list[tuple[str, str]] = [
+        ("lapse", "mult"),
+        ("rev", "ivlFct"),
+        ("rev", "ease4"),
+        ("rev", "hardFactor"),
+    ]
+    _LIST_FIELDS: list[tuple[str, str]] = [
+        ("new", "delays"),
+        ("lapse", "delays"),
+    ]
+
+    for sub, key in _INT_FIELDS:
+        sub_dict = cfg.get(sub)
+        if isinstance(sub_dict, dict) and key in sub_dict:
+            if not isinstance(sub_dict[key], int):
+                raise ValueError(
+                    f"updateDeckConfig: {sub}.{key} must be int, "
+                    f"got {type(sub_dict[key]).__name__!r}."
+                )
+
+    for sub, key in _FLOAT_FIELDS:
+        sub_dict = cfg.get(sub)
+        if isinstance(sub_dict, dict) and key in sub_dict:
+            val = sub_dict[key]
+            if isinstance(val, int):
+                # Coerce bare int to float; mutate in the cfg copy the caller
+                # already holds so Anki sees a float.
+                cfg[sub] = dict(cfg[sub])
+                cfg[sub][key] = float(val)
+            elif not isinstance(val, float):
+                raise ValueError(
+                    f"updateDeckConfig: {sub}.{key} must be float, "
+                    f"got {type(val).__name__!r}."
+                )
+
+    for sub, key in _LIST_FIELDS:
+        sub_dict = cfg.get(sub)
+        if isinstance(sub_dict, dict) and key in sub_dict:
+            if not isinstance(sub_dict[key], list):
+                raise ValueError(
+                    f"updateDeckConfig: {sub}.{key} must be list, "
+                    f"got {type(sub_dict[key]).__name__!r}."
+                )
+
+    with col_mod._col_lock:
+        col.decks.update_config(cfg, preserve_usn=False)
+    return None
+
+
+def _get_fsrs_params(params: dict) -> dict:
+    """Return the FSRS parameters and desired retention for a preset or deck.
+
+    Input:  ``{"configId": int}``         (preferred — resolves by preset id)
+         or ``{"deck": int|str}``         (legacy — resolves via deck name/id)
+    Output: ``{"params": list[float], "desiredRetention": float}``
+
+    ``params`` is the FSRS weight vector (21 floats for FSRS-6, or 17 for
+    FSRS-5 if FSRS-6 weights are absent).  An empty list means no weights
+    have been set yet (Anki will use built-in defaults).
+
+    ``desiredRetention`` is the target retention probability (0.0–1.0).
+
+    Read-only — no lock needed.
+    """
+    col = _col()
+    config_id = params.get("configId")
+    if config_id is not None:
+        config_id_int = int(config_id)
+        cfg: dict | None = None
+        for c in col.decks.all_config():
+            if c["id"] == config_id_int:
+                cfg = dict(c)
+                break
+        if cfg is None:
+            raise ValueError(
+                f"getFsrsParams: no preset with configId={config_id_int} — "
+                "use getDeckConfigs for valid preset ids."
+            )
+    else:
+        deck_param = params.get("deck", "Default")
+        did = _resolve_deck_id(deck_param)
+
+        from anki.decks import DeckId  # noqa: PLC0415
+
+        cfg = col.decks.config_dict_for_deck_id(DeckId(did))
+
+    # Prefer FSRS-6 (21 params); fall back to FSRS-5 (17 params)
+    fsrs_params = cfg.get("fsrsParams6") or cfg.get("fsrsParams5") or []
+    desired_retention: float = float(cfg.get("desiredRetention", 0.9))
+
+    return {
+        "params": list(fsrs_params),
+        "desiredRetention": desired_retention,
+    }
+
+
+# Allowed retention range — same bounds enforced by Anki's desktop UI
+_RETENTION_MIN = 0.70
+_RETENTION_MAX = 0.97
+
+
+def _resolve_config_id(params: dict) -> dict:
+    """Resolve a preset config dict from params containing ``configId`` or ``deck``.
+
+    Accepts (in priority order):
+    1. ``configId`` (int) — directly identifies the preset by id.
+    2. ``deck``     (int|str) — deck name or id; resolves to the deck's preset.
+
+    Returns the raw config dict for the resolved preset.
+
+    Raises
+    ------
+    ValueError
+        If ``configId`` is not found among existing presets, or if the deck
+        name/id cannot be resolved.
+    """
+    col = _col()
+    config_id = params.get("configId")
+    if config_id is not None:
+        config_id_int = int(config_id)
+        for cfg in col.decks.all_config():
+            if cfg["id"] == config_id_int:
+                return dict(cfg)
+        raise ValueError(
+            f"setDesiredRetention: no preset with configId={config_id_int} — "
+            "use getDeckConfigs for valid preset ids."
+        )
+
+    # Fall back to deck-based resolution
+    deck_param = params.get("deck", "Default")
+    did = _resolve_deck_id(deck_param)
+
+    from anki.decks import DeckId  # noqa: PLC0415
+
+    return col.decks.config_dict_for_deck_id(DeckId(did))
+
+
+def _set_desired_retention(params: dict) -> None:
+    """Set the desired retention for a deck's configuration preset.
+
+    Input:  ``{"configId": int, "retention": float}``
+         or ``{"deck": int|str, "retention": float}``   (backward-compatible)
+    Output: null
+
+    ``configId`` (preferred) directly identifies the preset by id.  When
+    absent, ``deck`` (name or id) is used to resolve the preset — this is the
+    legacy path and may raise "Deck not found" when a preset name does not
+    match any deck name.
+
+    ``retention`` must be in [0.70, 0.97].  Values outside this range raise
+    ``ValueError`` — Anki's own UI enforces the same bounds.
+
+    Wrap in lock: this is a write operation.
+
+    Raises
+    ------
+    ValueError
+        If ``retention`` is outside [0.70, 0.97], or if the preset/deck cannot
+        be resolved.
+    """
+    col = _col()
+    retention: float = float(params.get("retention", 0.9))
+
+    if retention < _RETENTION_MIN or retention > _RETENTION_MAX:
+        raise ValueError(
+            f"setDesiredRetention: retention {retention!r} is out of range "
+            f"[{_RETENTION_MIN}, {_RETENTION_MAX}]. "
+            "Anki's scheduler requires this bound."
+        )
+
+    cfg = _resolve_config_id(params)
+    cfg["desiredRetention"] = retention
+
+    with col_mod._col_lock:
+        col.decks.update_config(cfg, preserve_usn=False)
+
+    return None
+
+
+def _compute_optimal_retention(params: dict) -> dict:
+    """Compute the optimal retention for a deck using the FSRS simulator.
+
+    Input:  ``{"deck": int|str, optional simulation params}``
+    Output: ``{"optimalRetention": float}`` on success,
+            ``{"error": str, "note": str}`` on failure.
+
+    Optional simulation parameters (all have reasonable defaults):
+      - ``daysToSimulate`` (int, default 365)  — simulation horizon in days
+      - ``deckSize``       (int, default 0)    — 0 = infer from collection
+      - ``newLimit``       (int, default 0)    — 0 = use deck preset
+      - ``reviewLimit``    (int, default 0)    — 0 = use deck preset
+      - ``maxInterval``    (int, default 0)    — 0 = use deck preset
+      - ``search``         (str, default "")   — card filter (empty = whole deck)
+
+    Uses ``col._backend.compute_optimal_retention(SimulateFsrsReviewRequest)``
+    which is an internal backend API (not part of the public Collection API).
+    If the import or backend call fails, returns ``{"error": ..., "note": ...}``
+    instead of raising — this prevents a 500-style error when the internal API
+    changes between anki versions.
+
+    The FSRS params stored in the deck's config preset are used automatically;
+    the backend reads them from the collection config.
+
+    Confirmed signature (anki 25.9.2 backend):
+        compute_optimal_retention(SimulateFsrsReviewRequest) -> float
+    SimulateFsrsReviewRequest fields (anki.scheduler_pb2):
+        params, desired_retention, deck_size, days_to_simulate,
+        new_limit, review_limit, max_interval, search,
+        new_cards_ignore_review_limit, easy_days_percentages,
+        review_order, suspend_after_lapse_count, historical_retention,
+        learning_step_count, relearning_step_count
+    """
+    try:
+        from anki.scheduler_pb2 import SimulateFsrsReviewRequest  # noqa: PLC0415
+    except ImportError as exc:
+        return {
+            "error": f"SimulateFsrsReviewRequest not available: {exc}",
+            "note": "internal API — may break on anki upgrade",
+        }
+
+    col = _col()
+    deck_param = params.get("deck", "Default")
+    # _resolve_deck_id raises ValueError for unknown deck names/ids.  That
+    # exception is intentionally *not* caught here — it propagates out of this
+    # function and the server envelope converts it to a clean error response.
+    # Do not broaden the try/except below to swallow it.
+    did = _resolve_deck_id(deck_param)
+
+    from anki.decks import DeckId  # noqa: PLC0415
+
+    cfg = col.decks.config_dict_for_deck_id(DeckId(did))
+    fsrs_params = cfg.get("fsrsParams6") or cfg.get("fsrsParams5") or []
+    desired_retention = float(cfg.get("desiredRetention", 0.9))
+
+    days_to_simulate: int = int(params.get("daysToSimulate", 365))
+    deck_size: int = int(params.get("deckSize", 0))
+    new_limit: int = int(params.get("newLimit", 0))
+    review_limit: int = int(params.get("reviewLimit", 0))
+    max_interval: int = int(params.get("maxInterval", 0))
+    search: str = str(params.get("search", ""))
+
+    request = SimulateFsrsReviewRequest(
+        params=list(fsrs_params),
+        desired_retention=desired_retention,
+        deck_size=deck_size,
+        days_to_simulate=days_to_simulate,
+        new_limit=new_limit,
+        review_limit=review_limit,
+        max_interval=max_interval,
+        search=search,
+    )
+
+    try:
+        result: float = col._backend.compute_optimal_retention(request)
+        return {"optimalRetention": float(result)}
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "computeOptimalRetention backend call failed: %s — "
+            "collection may have too few review items or FSRS is not configured",
+            exc,
+        )
+        return {
+            "error": str(exc),
+            "note": (
+                "compute_optimal_retention is an internal backend API. "
+                "It requires FSRS to be enabled with a trained weight vector "
+                "and a minimum number of review items in the collection. "
+                "The API may also break on anki version upgrades."
+            ),
+        }
+
+
+# ---------------------------------------------------------------------------
+# DB & Media health actions (P0 admin A4)
+# ---------------------------------------------------------------------------
+
+
+def _check_database(params: dict) -> dict:  # noqa: ARG001
+    """Check the Anki database for consistency problems.
+
+    Read-only — no backup required.
+
+    Uses the INTERNAL backend API ``col._backend.check_database()``.  This is
+    NOT part of the public Collection API and may break on anki version
+    upgrades; we wrap it in try/except and document that risk.
+
+    Output: ``{"problems": [str], "ok": bool}``
+
+    Confirmed shape (anki 25.9.2):
+        col._backend.check_database() → google.protobuf.RepeatedScalarContainer
+        (iterable of str problem messages; empty list = no problems found)
+    """
+    col = _col()
+    with col_mod._col_lock:
+        try:
+            raw = col._backend.check_database()
+            problems = list(raw)  # RepeatedScalarContainer → list[str]
+        except Exception as exc:  # noqa: BLE001
+            # Internal backend API — treat any failure as a clean error rather
+            # than letting an opaque proto error surface to the client.
+            raise ValueError(
+                f"checkDatabase: backend check_database() failed — "
+                f"this is an internal API that may break on anki upgrades: {exc}"
+            ) from exc
+
+    return {"problems": problems, "ok": len(problems) == 0}
+
+
+def _fix_integrity(params: dict) -> dict:  # noqa: ARG001
+    """Rebuild and optimise the collection database.
+
+    DESTRUCTIVE: may delete orphaned cards/notes to repair the schema.  A
+    pre-backup is created before the operation.
+
+    Output: ``{"message": str, "ok": bool, "backup": str}``
+
+    Confirmed shape (anki 25.9.2):
+        col.fix_integrity() → tuple[str, bool]  (message, ok)
+    """
+    from src.maintenance import pre_backup  # noqa: PLC0415
+
+    col = _col()
+    with col_mod._col_lock:
+        backup_path = pre_backup("fixIntegrity")
+        message, ok = col.fix_integrity()
+
+    return {"message": message, "ok": ok, "backup": backup_path}
+
+
+def _optimize_collection(params: dict) -> dict:  # noqa: ARG001
+    """Run VACUUM on the collection database to reclaim space.
+
+    DESTRUCTIVE in the sense of being irreversible (rewrites the file); a
+    pre-backup is created first for safety.
+
+    Output: ``{"backup": str}``
+
+    Confirmed shape (anki 25.9.2):
+        col.optimize() → None
+    """
+    from src.maintenance import pre_backup  # noqa: PLC0415
+
+    col = _col()
+    with col_mod._col_lock:
+        backup_path = pre_backup("optimizeCollection")
+        col.optimize()
+
+    return {"backup": backup_path}
+
+
+def _get_empty_cards(params: dict) -> dict:  # noqa: ARG001
+    """Return a report of cards whose templates render empty content.
+
+    Read-only — no backup required.
+
+    Output:
+        ``{"emptyCardCount": int, "noteCount": int, "report": str,
+           "notes": [{"noteId": int, "cardIds": [int], "willDeleteNote": bool}]}``
+
+    Confirmed shape (anki 25.9.2):
+        col.get_empty_cards() → anki.card_rendering_pb2.EmptyCardsReport
+        Fields:
+          .notes  → RepeatedCompositeContainer of NoteWithEmptyCards
+          .report → str (HTML summary)
+        NoteWithEmptyCards fields:
+          .note_id         → int
+          .card_ids        → RepeatedScalarContainer of int
+          .will_delete_note → bool
+    """
+    col = _col()
+    with col_mod._col_lock:
+        ec = col.get_empty_cards()
+
+    notes_list = []
+    total_card_count = 0
+    for n_entry in ec.notes:
+        card_ids = list(n_entry.card_ids)
+        total_card_count += len(card_ids)
+        notes_list.append(
+            {
+                "noteId": n_entry.note_id,
+                "cardIds": card_ids,
+                "willDeleteNote": n_entry.will_delete_note,
+            }
+        )
+
+    return {
+        "emptyCardCount": total_card_count,
+        "noteCount": len(notes_list),
+        "report": ec.report,
+        "notes": notes_list,
+    }
+
+
+def _remove_empty_cards(params: dict) -> dict:  # noqa: ARG001
+    """Delete all empty cards (and their orphaned notes) from the collection.
+
+    DESTRUCTIVE.  A pre-backup is created first.
+
+    Mirrors Anki Desktop's "Check Empty Cards → Delete" behaviour:
+    uses ``col.remove_cards_and_orphaned_notes()`` which removes cards and
+    then automatically deletes any note left with zero remaining cards.
+
+    Output: ``{"removed": int, "backup": str}``
+
+    Confirmed API (anki 25.9.2):
+        col.remove_cards_and_orphaned_notes(card_ids: list[CardId]) → None
+    """
+    from anki.cards import CardId  # noqa: PLC0415
+    from src.maintenance import pre_backup  # noqa: PLC0415
+
+    col = _col()
+    with col_mod._col_lock:
+        ec = col.get_empty_cards()
+        all_empty_card_ids: list[int] = []
+        for n_entry in ec.notes:
+            all_empty_card_ids.extend(list(n_entry.card_ids))
+
+        removed = len(all_empty_card_ids)
+        if removed == 0:
+            # Nothing to do; still create backup for audit trail consistency,
+            # but skip the remove call.
+            backup_path = pre_backup("removeEmptyCards")
+            return {"removed": 0, "backup": backup_path}
+
+        backup_path = pre_backup("removeEmptyCards")
+        col.remove_cards_and_orphaned_notes([CardId(cid) for cid in all_empty_card_ids])
+
+    return {"removed": removed, "backup": backup_path}
+
+
+def _media_check(params: dict) -> dict:  # noqa: ARG001
+    """Scan the media folder and report unused and missing files.
+
+    Read-only (though ``col.media.check()`` rebuilds the media DB as a side
+    effect — it rewrites the internal media hash table, which is non-destructive
+    from a user-data perspective).
+
+    NOTE on media rebuild: ``col.media.check()`` already rebuilds the media
+    database as part of its scan.  There is no separate "rebuildMediaDb" method
+    exposed by anki 25.9.2.  ``col.media.force_resync()`` forces a re-sync
+    with AnkiWeb on the next sync but does not rebuild the local hash table —
+    it is not the equivalent of a rebuild.
+
+    Output:
+        ``{"unused": [str], "missing": [str], "report": str, "haveTrash": bool}``
+
+    Confirmed shape (anki 25.9.2):
+        col.media.check() → anki.media_pb2.CheckMediaResponse
+        Fields: .unused, .missing, .missing_media_notes, .report, .have_trash
+    """
+    col = _col()
+    with col_mod._col_lock:
+        resp = col.media.check()
+
+    return {
+        "unused": list(resp.unused),
+        "missing": list(resp.missing),
+        "report": resp.report,
+        "haveTrash": resp.have_trash,
+    }
+
+
+def _delete_unused_media(params: dict) -> dict:  # noqa: ARG001
+    """Move all unused media files to the media trash, then empty the trash.
+
+    DESTRUCTIVE (media deletion is not reversed by restoring the .anki2
+    backup — the backup only contains the collection database, not the media
+    folder).  A pre-backup of the .anki2 file is still created for audit-trail
+    consistency and to capture the collection state at the time of deletion.
+
+    NOTE: the backup does NOT contain media files.  If you need to recover
+    deleted media files, restore them from a filesystem backup of the media
+    folder (``col.media.dir()``).
+
+    Output: ``{"deletedCount": int, "backup": str}``
+    """
+    from src.maintenance import pre_backup  # noqa: PLC0415
+
+    col = _col()
+    with col_mod._col_lock:
+        resp = col.media.check()
+        unused = list(resp.unused)
+
+        backup_path = pre_backup("deleteUnusedMedia")
+
+        if unused:
+            col.media.trash_files(unused)
+            col.media.empty_trash()
+
+    return {"deletedCount": len(unused), "backup": backup_path}
+
+
+def _media_dir_size(params: dict) -> dict:  # noqa: ARG001
+    """Return total size and file count of the media directory.
+
+    Read-only — no backup required.
+
+    Output: ``{"bytes": int, "fileCount": int, "dir": str}``
+    """
+    import os as _os  # noqa: PLC0415
+
+    col = _col()
+    with col_mod._col_lock:
+        media_dir = col.media.dir()
+
+    total_bytes = 0
+    file_count = 0
+    if _os.path.isdir(media_dir):
+        for _root, _dirs, files in _os.walk(media_dir):
+            for fname in files:
+                fpath = _os.path.join(_root, fname)
+                try:
+                    total_bytes += _os.path.getsize(fpath)
+                    file_count += 1
+                except OSError:
+                    pass  # Skip files we can't stat (race condition, etc.)
+
+    return {"bytes": total_bytes, "fileCount": file_count, "dir": media_dir}
+
+
+# ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
 
@@ -706,22 +1883,44 @@ ACTIONS: dict[str, Any] = {
     "updateNoteFields": _update_note_fields,
     "addTags": _add_tags,
     "removeTags": _remove_tags,
+    # Admin — Notes (destructive)
+    "deleteNotes": _delete_notes,
     # Cards
     "findCards": _find_cards,
     "cardsInfo": _cards_info,
     "cardsToNotes": _cards_to_notes,
     "changeDeck": _change_deck,
+    # Admin — Cards (paginated browse)
+    "findCardsPaginated": _find_cards_paginated,
     # Decks
     "createDeck": _create_deck,
     "deckNames": _deck_names,
     "getDeckStats": _get_deck_stats,
-    # Scheduler
+    # Admin — Decks (destructive + rename)
+    "deleteDecks": _delete_decks,
+    "renameDeck": _rename_deck,
+    # Scheduler — suspend / unsuspend
     "suspend": _suspend,
     "unsuspend": _unsuspend,
+    # Scheduler — triage (bury / unbury / set due / forget / reposition)
+    "bury": _bury,
+    "unbury": _unbury,
+    "setDueDate": _set_due_date,
+    "forgetCards": _forget_cards,
+    "repositionNewCards": _reposition_new_cards,
+    "reposition": _reposition_new_cards,  # short alias
+    # Notes — find & replace / duplicates
+    "findAndReplace": _find_and_replace,
+    "findDuplicates": _find_duplicates,
+    # Tags — bulk cleanup + listing
+    "clearUnusedTags": _clear_unused_tags,
+    "getTags": _get_tags,
     # Models
     "modelNames": _model_names,
     "createModel": _create_model,
     "modelTemplates": _model_templates,
+    # Admin — Models (read-only)
+    "modelFieldNames": _model_field_names,
     # Card field mutation
     "setSpecificValueOfCard": _set_specific_value_of_card,
     # Media
@@ -733,4 +1932,22 @@ ACTIONS: dict[str, Any] = {
     "getNumCardsReviewedByDay": _get_num_cards_reviewed_by_day,
     "getReviewsOfCards": _get_reviews_of_cards,
     "getCollectionStatsHTML": _get_collection_stats_html,
+    # Scheduling control — deck config + FSRS (P0 admin A3)
+    "getDeckConfig": _get_deck_config,
+    "getDeckConfigs": _get_deck_configs,
+    "updateDeckConfig": _update_deck_config,
+    "getFsrsParams": _get_fsrs_params,
+    "setDesiredRetention": _set_desired_retention,
+    "computeOptimalRetention": _compute_optimal_retention,
+    # DB & Media health (P0 admin A4)
+    "checkDatabase": _check_database,
+    "fixIntegrity": _fix_integrity,
+    "optimizeCollection": _optimize_collection,
+    "getEmptyCards": _get_empty_cards,
+    "removeEmptyCards": _remove_empty_cards,
+    "mediaCheck": _media_check,
+    "deleteUnusedMedia": _delete_unused_media,
+    "mediaDirSize": _media_dir_size,
+    # Diagnostics & stats (P0 admin A5)
+    **STATS_ACTIONS,
 }

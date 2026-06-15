@@ -1,0 +1,74 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2 class="page-title">Dashboard</h2>
+</div>
+
+{# Collection health summary #}
+<section class="card health-card">
+  <h3 class="card-title">Collection Health</h3>
+  {% if health_error %}
+    <p class="health-error">
+      <strong>Collection not available:</strong> {{ health_error }}
+    </p>
+  {% elif health %}
+    <dl class="health-grid">
+      <dt>Status</dt>
+      <dd class="status-{{ health.get('status', 'unknown') }}">
+        {{ health.get('status', 'unknown') }}
+        {% if health.get('syncing') %}
+          <span class="badge badge-warn">syncing</span>
+        {% endif %}
+      </dd>
+
+      {% if health.get('card_count') is not none %}
+      <dt>Cards</dt>
+      <dd>{{ health['card_count'] | int }}</dd>
+      {% endif %}
+
+      {% if health.get('note_count') is not none %}
+      <dt>Notes</dt>
+      <dd>{{ health['note_count'] | int }}</dd>
+      {% endif %}
+
+      {% if health.get('collection_path') %}
+      <dt>Collection path</dt>
+      <dd class="monospace">{{ health['collection_path'] }}</dd>
+      {% endif %}
+    </dl>
+  {% else %}
+    <p class="health-unknown">Health data unavailable.</p>
+  {% endif %}
+</section>
+
+{# Navigation placeholders — future panels (A6–A9) #}
+<section class="card panels-card">
+  <h3 class="card-title">Admin Panels</h3>
+  <p class="panels-intro">
+    The following panels are under development. They will appear in the navigation
+    bar above as each wave ships.
+  </p>
+  <ul class="panels-list">
+    <li class="panel-item panel-live">
+      <strong><a href="{{ url_for('admin.browse') }}">Browser</a></strong> (A6) &mdash; Browse, search, and triage cards and notes.
+      Supports bulk suspend / unsuspend, deck change, tag editing, find &amp; replace, and more.
+    </li>
+    <li class="panel-item panel-live">
+      <strong><a href="{{ url_for('admin.scheduling') }}">Scheduling</a></strong> (A7) &mdash; Edit deck options presets, configure FSRS
+      desired retention, enable FSRS, and compute optimal retention.
+    </li>
+    <li class="panel-item panel-live">
+      <strong><a href="{{ url_for('admin.maintenance') }}">Database &amp; Media</a></strong> (A8) &mdash; Check media consistency,
+      run the orphan cleaner, and initiate a pre-backup snapshot.
+    </li>
+    <li class="panel-item panel-live">
+      <strong><a href="{{ url_for('admin.diagnostics') }}">Diagnostics</a></strong> (A9) &mdash; Collection statistics charts: card counts,
+      true retention, interval distribution, ease distribution, future due forecast,
+      reviews by day, added by day, and time spent. Powered by Chart.js (vendored).
+    </li>
+  </ul>
+</section>
+{% endblock %}

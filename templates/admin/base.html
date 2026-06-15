@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Admin{% endblock %} — Anki Collection Server</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='admin/admin.css') }}">
+</head>
+<body>
+  <header class="admin-header">
+    <div class="admin-header-inner">
+      <a href="{{ url_for('admin.index') }}" class="admin-brand">
+        Anki Admin
+      </a>
+      <nav class="admin-nav">
+        {# Future panels will each be a nav link here #}
+        <a href="{{ url_for('admin.index') }}" class="nav-link{% if request.endpoint == 'admin.index' %} active{% endif %}">
+          Dashboard
+        </a>
+        <a href="{{ url_for('admin.browse') }}" class="nav-link{% if request.endpoint == 'admin.browse' %} active{% endif %}">
+          Browser
+        </a>
+        <a href="{{ url_for('admin.scheduling') }}" class="nav-link{% if request.endpoint == 'admin.scheduling' %} active{% endif %}">
+          Scheduling
+        </a>
+        <a href="{{ url_for('admin.maintenance') }}" class="nav-link{% if request.endpoint == 'admin.maintenance' %} active{% endif %}">
+          DB &amp; Media
+        </a>
+        <a href="{{ url_for('admin.diagnostics') }}" class="nav-link{% if request.endpoint == 'admin.diagnostics' %} active{% endif %}">
+          Diagnostics
+        </a>
+        <a href="{{ url_for('admin.logout') }}" class="nav-link nav-logout">Logout</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="admin-main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="admin-footer">
+    anki-collection-server &mdash; admin console
+  </footer>
+
+  <script src="{{ url_for('static', filename='admin/admin.js') }}"></script>
+  {% block extra_js %}{% endblock %}
+</body>
+</html>

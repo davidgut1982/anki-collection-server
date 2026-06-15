@@ -60,6 +60,161 @@ curl -s http://localhost:8765/health
 See `docker-compose.example.yml` for a full example including an optional
 self-hosted sync server.
 
+## Admin console (`/admin`)
+
+An optional web-based admin console is available at `/admin`.
+
+### Enabling the admin UI
+
+Set the `ADMIN_TOKEN` environment variable to a high-entropy secret (32+
+characters recommended):
+
+```bash
+docker run -d \
+  -p 8765:8765 \
+  -v /path/to/anki/collection:/data/collection:rw \
+  -e ANKI_COLLECTION_PATH=/data/collection/collection.anki2 \
+  -e ADMIN_TOKEN=your-secret-token-here \
+  --user 1005:136 \
+  anki-collection-server:dev
+```
+
+If `ADMIN_TOKEN` is **not set**, every request to `/admin/*` returns HTTP 503
+with a plain-text message explaining that the admin UI is disabled. The
+AnkiConnect API (`POST /`) and health probe (`GET /health`) are **not affected**.
+
+### Authentication
+
+The admin console accepts the token via any of the following (checked in order):
+
+| Method | How to use |
+|--------|------------|
+| `X-Admin-Token` header | `curl -H "X-Admin-Token: TOKEN" http://host:8765/admin/` |
+| HTTP Basic Auth | `curl -u :TOKEN http://host:8765/admin/` (any username) |
+| `token` cookie | Set automatically by the login form at `/admin/login` |
+
+All token comparisons use `hmac.compare_digest` (constant-time, safe against
+timing attacks).
+
+The login form at `/admin/login` sets an `HttpOnly; SameSite=Strict; Secure`
+session cookie after a valid token is submitted, enabling normal browser
+navigation without re-entering the token on each page.
+
+### Admin pages
+
+| Route | Description |
+|-------|-------------|
+| `GET /admin` | Dashboard: collection health summary, links to panels |
+| `GET /admin/browse` | Card/Note Browser: search, paginated table, bulk actions, note editor, Find & Replace, Find Duplicates |
+| `GET /admin/scheduling` | Scheduling: deck options presets, FSRS enable/configure, compute optimal retention |
+| `GET /admin/maintenance` | Database & Media: check database, find/remove empty cards, optimize, fix integrity, check/delete unused media |
+| `GET /admin/diagnostics` | Diagnostics: 8 Chart.js charts (card counts, retention, intervals, ease, future due, reviews/day, added/day, time spent) |
+| `POST /admin/api/invoke` | Token-gated AnkiConnect proxy used by all admin pages (not for direct browser use) |
+
+#### /admin/maintenance
+
+Database and media health tools.
+
+**Database section**
+
+- **Check Database** — runs `checkDatabase`; shows OK or a list of problems.
+- **Find Empty Cards** — runs `getEmptyCards`; shows count and Anki's report text.
+- **Optimize (VACUUM)** — single confirm — runs `optimizeCollection` (SQLite VACUUM).
+  Displays the backup path after completion.
+- **Fix Integrity** — double confirm — runs `fixIntegrity`. May delete orphaned
+  cards. Backup is made immediately before the operation and displayed prominently.
+- **Remove Empty Cards** — double confirm with count — pre-fetches the empty card
+  count and shows it in the confirm dialog before calling `removeEmptyCards`.
+  Displays backup path after completion.
+
+**Media section**
+
+- **Media Check** — runs `mediaCheck`; shows unused/missing counts with collapsible
+  file lists (capped at 50 items).
+- **Media Dir Size** — runs `mediaDirSize`; shows human-readable size, file count,
+  and directory path.
+- **Delete Unused Media** — double confirm with count — pre-fetches unused file
+  count via `mediaCheck`, then calls `deleteUnusedMedia`. Note: media files are
+  NOT included in the .anki2 backup and cannot be recovered from it.
+
+Long-running operations (Optimize, Fix Integrity, Media Check) use a 5-minute
+timeout so the browser does not time out during heavy operations.
+
+#### /admin/scheduling
+
+Edit deck configuration presets and manage FSRS settings.
+
+**Deck Options (per preset)**
+
+Select a preset from the dropdown to view and edit its scheduling parameters:
+
+- New cards: per-day limit, learning steps, graduating/easy intervals, bury siblings
+- Reviews: per-day limit, max interval, interval modifier, bury siblings
+- Lapses: relearn steps, leech threshold/action, min interval, new interval %
+
+Changes are saved via `updateDeckConfig` (read-modify-write: the full config dict
+is fetched, mutated, and sent back — no fields are lost). All saves show a confirm
+dialog noting the preset name.
+
+**FSRS Panel**
+
+- Shows whether FSRS is enabled (`isFsrsEnabled`).
+- **Enable FSRS** button: runs `enableFsrs(optimize=true)`, which optimizes
+  parameters from your full review history. Confirm dialog shown.
+- **Desired Retention**: displays current value (`getFsrsParams`), editable
+  (0.70–0.97), saved via `setDesiredRetention`. Confirm dialog shown.
+- **FSRS Parameters**: read-only display of the 21-float weight vector.
+- **Compute Optimal Retention**: calls `computeOptimalRetention` and displays
+  the suggested value (best-effort; shows an error note if insufficient data).
+
+> **Headless caveat:** this server cannot auto-reschedule existing cards when
+> FSRS parameters change (that requires Anki Desktop / Qt runtime). New
+> scheduling takes effect as cards are reviewed going forward. To reschedule
+> existing cards, open the collection in Anki Desktop after syncing.
+
+#### /admin/browse
+
+Search your collection with the full Anki query syntax (`deck:`, `tag:`,
+`is:due/new/suspended/buried`, `prop:ivl`, `added:`, `flag:`, `re:`).
+Results appear in a sortable table. Select cards for bulk actions:
+
+- Suspend / unsuspend, bury / unbury
+- Set flag (0-7), change deck, set due date
+- Forget cards (reset to new), reposition new cards
+- Add / remove tags
+- Delete notes (double-confirm, permanent)
+
+Click a row to open the **Note Editor** panel: edit field values and tags,
+then save without leaving the page.
+
+Use the **Find & Replace** tool to apply regex or plain-text substitutions
+across the current search results, or **Find Duplicates** to locate notes
+with matching field values.
+
+All mutating actions are confirmed before execution. All calls go through
+the token-gated `POST /admin/api/invoke` proxy -- the raw `POST /` endpoint
+is never called from the browser admin UI.
+
+**Note:** The `Secure` cookie flag requires HTTPS.  The server trusts
+`X-Forwarded-Proto` from the reverse proxy (pfSense / nginx TLS termination)
+via Werkzeug's `ProxyFix`, so the flag works correctly behind one hop of TLS
+offloading without any additional configuration.
+
+**Rate-limiting:** `POST /admin/login` is rate-limited to 10 failed attempts
+per IP per 5 minutes.  Excess attempts receive `429 Too Many Requests` with a
+`Retry-After` header.  The counter resets on successful login.
+
+**Optional env vars:**
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `ADMIN_TOKEN` | Admin UI token (required to enable `/admin`) | — |
+| `FLASK_SECRET_KEY` | Override the Flask session signing key | Derived from `ADMIN_TOKEN` via SHA-256 |
+
+`FLASK_SECRET_KEY` is optional.  When unset, the server derives a stable key
+from `ADMIN_TOKEN` using a domain-separated SHA-256 hash — the key is never the
+raw token value.
+
 ## Status
 
 **MVP in progress.** The scaffold and stub server are complete (Step 2 of 13).
@@ -88,13 +243,23 @@ implemented in subsequent steps.
 |----------|---------|
 | Meta | `version` |
 | Notes | `findNotes`, `notesInfo`, `addNote`, `updateNoteFields`, `addTags`, `removeTags` |
+| Notes (admin) | `deleteNotes`, `findAndReplace`, `findDuplicates` |
 | Cards | `findCards`, `cardsInfo`, `cardsToNotes`, `changeDeck` |
+| Cards (admin) | `findCardsPaginated` |
 | Decks | `createDeck`, `deckNames`, `getDeckStats` |
-| Scheduler | `suspend`, `unsuspend` |
+| Decks (admin) | `deleteDecks`, `renameDeck` |
+| Scheduler | `suspend`, `unsuspend`, `bury`, `unbury`, `setDueDate`, `forgetCards`, `repositionNewCards`, `reposition` |
+| Scheduling config | `getDeckConfig`, `getDeckConfigs`, `updateDeckConfig`, `getFsrsParams`, `setDesiredRetention`, `computeOptimalRetention` |
+| DB health | `checkDatabase`, `fixIntegrity`, `optimizeCollection` |
+| Empty cards | `getEmptyCards`, `removeEmptyCards` |
+| Media health | `mediaCheck`, `deleteUnusedMedia`, `mediaDirSize` |
 | Models | `modelNames`, `createModel`, `modelTemplates` |
+| Models (admin) | `modelFieldNames` |
 | Card mutation | `setSpecificValueOfCard` |
 | Media | `storeMediaFile`, `retrieveMediaFile`, `deleteMediaFile` |
+| Tags | `getTags`, `clearUnusedTags` |
 | Stats | `getNumCardsReviewedToday`, `getNumCardsReviewedByDay`, `getReviewsOfCards`, `getCollectionStatsHTML` |
+| Diagnostics | `statCardCounts`, `statTrueRetention`, `statIntervalDistribution`, `statEaseDistribution`, `statFutureDue`, `statReviewsByDay`, `statAddedByDay`, `statTimeSpent` |
 | Review GUI | `guiDeckReview`, `guiCurrentCard`, `guiStartCardTimer`, `guiShowAnswer`, `guiAnswerCard`, `guiUndo` |
 | Sync | `sync` |
 | FSRS | `enableFsrs`, `isFsrsEnabled` |
