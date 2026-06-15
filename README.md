@@ -100,6 +100,37 @@ The login form at `/admin/login` sets an `HttpOnly; SameSite=Strict; Secure`
 session cookie after a valid token is submitted, enabling normal browser
 navigation without re-entering the token on each page.
 
+### Admin pages
+
+| Route | Description |
+|-------|-------------|
+| `GET /admin` | Dashboard: collection health summary, links to panels |
+| `GET /admin/browse` | Card/Note Browser: search, paginated table, bulk actions, note editor, Find & Replace, Find Duplicates |
+| `POST /admin/api/invoke` | Token-gated AnkiConnect proxy used by all admin pages (not for direct browser use) |
+
+#### /admin/browse
+
+Search your collection with the full Anki query syntax (`deck:`, `tag:`,
+`is:due/new/suspended/buried`, `prop:ivl`, `added:`, `flag:`, `re:`).
+Results appear in a sortable table. Select cards for bulk actions:
+
+- Suspend / unsuspend, bury / unbury
+- Set flag (0-7), change deck, set due date
+- Forget cards (reset to new), reposition new cards
+- Add / remove tags
+- Delete notes (double-confirm, permanent)
+
+Click a row to open the **Note Editor** panel: edit field values and tags,
+then save without leaving the page.
+
+Use the **Find & Replace** tool to apply regex or plain-text substitutions
+across the current search results, or **Find Duplicates** to locate notes
+with matching field values.
+
+All mutating actions are confirmed before execution. All calls go through
+the token-gated `POST /admin/api/invoke` proxy -- the raw `POST /` endpoint
+is never called from the browser admin UI.
+
 **Note:** The `Secure` cookie flag requires HTTPS.  The server trusts
 `X-Forwarded-Proto` from the reverse proxy (pfSense / nginx TLS termination)
 via Werkzeug's `ProxyFix`, so the flag works correctly behind one hop of TLS

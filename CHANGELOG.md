@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — A6: Card/Note Browser + Triage admin page (feat/admin-actions)
+
+#### POST /admin/api/invoke -- token-gated AnkiConnect proxy
+- New route `POST /admin/api/invoke` on the admin blueprint.
+- Accepts `{"action": str, "params": dict}` and dispatches via the same
+  merged `DISPATCH` table (`ACTIONS + GUI_ACTIONS + SYNC_ACTIONS + FSRS_ACTIONS`)
+  used by the raw `POST /` AnkiConnect endpoint.
+- Enforced by the existing `before_request` auth hook -- requires the same
+  token (cookie / X-Admin-Token header / Basic auth) as all `/admin/*` routes.
+- Returns the standard AnkiConnect envelope `{"result": ..., "error": ...}`.
+- The browser admin UI never hits the unauthenticated `POST /` directly.
+
+#### `acsInvoke(action, params)` JS helper (`static/admin/admin.js`)
+- Thin `fetch`-based wrapper around `POST /admin/api/invoke`.
+- Sends `credentials: 'same-origin'` so the session cookie is forwarded.
+- Returns the `result` value on success; throws `Error(envelope.error)` on
+  action-level failure; auto-redirects to `/admin/login` on 401.
+
+#### GET /admin/browse -- Card/Note Browser
+- Full-featured card and note browser at `/admin/browse`.
+- **Search bar**: free-text Anki query with `deck:`, `tag:`, `is:due/new/suspended/buried`,
+  `prop:ivl`, `added:`, `flag:`, `dupe:`, `re:` support; search-help hint panel.
+- **Results table**: columns -- first field, deck, note type, due, interval,
+  reps, lapses, flags (color swatch), state (new/learn/review/suspended/buried).
+  Client-side sortable; row click opens note editor panel.
+- **Pagination**: prev/next, configurable page size (25/50/100/200), live
+  `findCardsPaginated` + `cardsInfo` calls via `acsInvoke`.
+- **Multi-select**: per-row checkbox + select-all; selection count displayed
+  in status bar; bulk toolbar appears when cards are selected.
+- **Bulk actions** (all confirm before executing):
+  - suspend / unsuspend, bury / unbury
+  - set flag (0-7 with color picker)
+  - change deck (dropdown populated from `deckNames`)
+  - set due date (day-spec string, e.g. "3-7")
+  - forget cards (double-confirm, resets to new)
+  - reposition new cards (start + step)
+  - add tags / remove tags
+  - delete notes (double-confirm, permanent)
+- **Note editor panel** (slide-in overlay): editable fields (textarea per
+  field), tag editor (space-separated), Save -> `updateNoteFields` + tag diff
+  (`addTags`/`removeTags`), Delete-note button (double-confirm).
+- **Find & Replace** mini-tool: field selector, search/replacement text,
+  regex + match-case toggles; scoped to current page's notes; shows count
+  changed.
+- **Find Duplicates** mini-tool: field name selector -> `findDuplicates`;
+  lists duplicate groups with filter links.
+- Nav link wired in `templates/admin/base.html` (replaces "Browser" placeholder).
+- Dashboard `index.html` updated: Browser panel marked live with link.
+- `static/admin/admin.css`: all browse-specific styles added (buttons, table,
+  state badges, flag dots, editor overlay, modal dialogs, spinner).
+- `static/admin/browse.js`: 600 LOC dependency-free vanilla JS.
+
+#### Tests (`tests/test_admin_browse.py` -- 14 new tests)
+- `TestInvokeAuthGate`: invoke without token -> 401/302; wrong token -> 401;
+  no ADMIN_TOKEN -> 503.
+- `TestInvokeDispatch`: `deckNames` via proxy returns correct envelope;
+  `version` action returns 6; unknown action -> `{result:null,error:"..."}`;
+  missing `action` field -> 400; handler exception -> envelope error;
+  cookie auth grants access.
+- `TestBrowseRoute`: browse without token redirects; browse with token -> 200;
+  no ADMIN_TOKEN -> 503; page contains expected UI elements; nav link active.
+
 ### Fixed — Code Critic WARN remediation: honest naming + atomicity (feat/admin-actions A5)
 
 Addresses WARN findings from the Code Critic review of `src/stats.py`.
