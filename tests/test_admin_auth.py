@@ -139,7 +139,10 @@ def _build_test_app(admin_token: str | None) -> Any:
     import src.admin.routes as routes_mod
 
     importlib.reload(routes_mod)  # clear any stale before_request state
-    app.register_blueprint(routes_mod.admin_bp)
+    # Explicit url_prefix="/admin" mirrors server.py default (ADMIN_BASE_PATH=/admin).
+    # Tests for alternate prefixes live in test_admin_basepath.py.
+    app.config["ADMIN_BASE_PATH"] = "/admin"
+    app.register_blueprint(routes_mod.admin_bp, url_prefix="/admin")
 
     return app
 

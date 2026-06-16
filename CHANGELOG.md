@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — configurable admin console URL prefix (feat/admin-basepath)
+
+- **`ADMIN_BASE_PATH` environment variable**: Controls the URL prefix under which
+  the entire admin console (pages, API, static assets) is served.  Default is
+  `/admin` for full backward-compatibility with existing deployments.
+
+  With `ADMIN_BASE_PATH=/anki-admin` a 1:1 reverse proxy can map
+  `/anki-admin/* → sidecar /anki-admin/*` without URL rewriting, because every
+  admin URL the server emits (HTML links, CSS/JS asset refs, login redirect
+  `Location` header, JS fetch targets, cookie `Path`) is now under the configured
+  prefix.
+
+- **Blueprint url_prefix applied centrally** (`src/server.py`): The admin
+  blueprint is registered via `app.register_blueprint(admin_bp, url_prefix=ADMIN_BASE_PATH)`
+  rather than hard-coding `/admin` inside the blueprint definition.
+
+- **Blueprint static assets** (`src/admin/routes.py`): The admin blueprint now
+  owns a `static_folder` mounted at `<prefix>/static/`.  All templates reference
+  admin assets via `url_for('admin.static', filename=...)` (was `url_for('static', ...)`),
+  so asset URLs automatically reflect the configured prefix.  Blueprint static
+  files are exempt from authentication (`admin.static` added to `_EXEMPT_ENDPOINTS`)
+  so the login page can load its stylesheet before the user has a session cookie.
+
+- **Context processor** (`src/admin/routes.py`): Every blueprint template receives
+  `admin_base` (the configured prefix without trailing slash).  `base.html` and
+  `login.html` inject `<script>window.ADMIN_BASE = "{{ admin_base }}";</script>`
+  so client-side JS can resolve fetch targets and redirects without hardcoded paths.
+
+- **JS fetch targets updated** (`static/admin/admin.js`, `static/admin/maintenance.js`):
+  All fetch calls and client-side redirects previously hardcoded to `/admin/api/invoke`
+  and `/admin/login` now use `window.ADMIN_BASE` (with `/admin` as the JS-side
+  fallback so scripts remain functional in test environments where the global is
+  absent).
+
+- **Cookie path scoped to prefix** (`src/admin/routes.py` `login_post`): The
+  `token` session cookie `Path` attribute is set to `ADMIN_BASE_PATH` (was
+  unset / global `/`), so the cookie is only sent to URLs under the admin prefix.
+
+- **`_normalize_base_path` helper** (`src/server.py`): Adds leading slash if
+  missing, strips trailing slashes, defaults to `/admin` for empty input.
+
+- **Tests** (`tests/test_admin_basepath.py`): 31 new tests covering:
+  - `_normalize_base_path` edge cases
+  - Default prefix (`/admin`) — all existing behaviour preserved
+  - Custom prefix (`/anki-admin`) — login 200, old `/admin/*` 404, API gated,
+    static served, HTML emits correct prefix, `window.ADMIN_BASE` injected,
+    login redirect under custom prefix, cookie path set, logout under prefix,
+    admin disabled returns 503 under custom prefix
+
 ### Fixed — scheduling panel FSRS preset-name bug (feat/admin-actions)
 
 - **BUG — scheduling.js FSRS panel**: Removed `getFsrsParams({deck: presetName})`

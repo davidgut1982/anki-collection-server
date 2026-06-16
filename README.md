@@ -208,12 +208,26 @@ per IP per 5 minutes.  Excess attempts receive `429 Too Many Requests` with a
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `ADMIN_TOKEN` | Admin UI token (required to enable `/admin`) | — |
+| `ADMIN_TOKEN` | Admin UI token (required to enable the admin console) | — |
+| `ADMIN_BASE_PATH` | URL prefix for the entire admin console | `/admin` |
 | `FLASK_SECRET_KEY` | Override the Flask session signing key | Derived from `ADMIN_TOKEN` via SHA-256 |
 
 `FLASK_SECRET_KEY` is optional.  When unset, the server derives a stable key
 from `ADMIN_TOKEN` using a domain-separated SHA-256 hash — the key is never the
 raw token value.
+
+**`ADMIN_BASE_PATH`** lets you host the admin console at a custom prefix so a
+reverse proxy can serve it via a 1:1 path mapping (no URL rewriting required).
+Example: with `ADMIN_BASE_PATH=/anki-admin` a proxy rule of
+`/anki-admin/* → sidecar:8765/anki-admin/*` (pass-through, no rewrite) routes
+all admin traffic — pages, API, static assets, login redirects — correctly under
+`/anki-admin`.
+
+Every admin URL the server emits (HTML asset refs, login redirect `Location`,
+JS fetch targets, session cookie `Path`) is derived from `ADMIN_BASE_PATH` at
+runtime.  The value is normalised at startup: a leading `/` is added if missing
+and trailing slashes are stripped.  An empty or unset value defaults to `/admin`,
+preserving full backward-compatibility.
 
 ## Status
 
