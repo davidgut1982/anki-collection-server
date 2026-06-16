@@ -128,7 +128,8 @@ def _build_test_app(admin_token: str | None) -> Any:
     import src.admin.routes as routes_mod
 
     importlib.reload(routes_mod)
-    app.register_blueprint(routes_mod.admin_bp)
+    app.config["ADMIN_BASE_PATH"] = "/admin"
+    app.register_blueprint(routes_mod.admin_bp, url_prefix="/admin")
 
     return app
 

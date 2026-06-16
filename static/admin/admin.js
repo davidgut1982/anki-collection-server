@@ -4,7 +4,11 @@
  * acsInvoke(action, params)
  * -------------------------
  * All admin UI pages call AnkiConnect actions through the token-gated proxy at
- * POST /admin/api/invoke rather than hitting the raw unauthenticated POST /.
+ * POST <ADMIN_BASE>/api/invoke rather than hitting the raw unauthenticated POST /.
+ *
+ * The base path is read from window.ADMIN_BASE (injected by base.html / login.html
+ * via the Jinja2 context processor) so that the client works correctly regardless
+ * of the URL prefix the server is mounted under.
  *
  * Usage:
  *   const decks = await acsInvoke('deckNames', {});
@@ -20,6 +24,15 @@
   "use strict";
 
   /**
+   * Resolve the admin base path from the injected global, falling back to
+   * "/admin" if the variable is absent (e.g. in unit test environments).
+   * @returns {string}
+   */
+  function _adminBase() {
+    return (global.ADMIN_BASE || "/admin").replace(/\/$/, "");
+  }
+
+  /**
    * Call a single AnkiConnect action through the token-gated admin proxy.
    *
    * @param {string} action  - AnkiConnect action name (e.g. "deckNames")
@@ -27,7 +40,8 @@
    * @returns {Promise<*>}   - resolves with result value, rejects on error
    */
   async function acsInvoke(action, params) {
-    const resp = await fetch("/admin/api/invoke", {
+    const base = _adminBase();
+    const resp = await fetch(base + "/api/invoke", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
@@ -37,7 +51,7 @@
     if (!resp.ok) {
       if (resp.status === 401 || resp.status === 302) {
         // Session expired -- redirect to login
-        window.location.href = "/admin/login";
+        window.location.href = base + "/login";
         throw new Error("Session expired. Redirecting to login.");
       }
       throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);

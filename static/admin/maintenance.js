@@ -135,16 +135,19 @@
 
   /**
    * Like acsInvoke but with a configurable AbortController timeout.
+   * Uses window.ADMIN_BASE (injected by base.html) for the fetch URL so that
+   * the endpoint resolves correctly regardless of the configured URL prefix.
    * @param {string} action
    * @param {Object} params
    * @param {number} timeoutMs
    * @returns {Promise<any>}
    */
   async function acsInvokeTimeout(action, params, timeoutMs) {
+    const base = (window.ADMIN_BASE || '/admin').replace(/\/$/, '');
     const controller = new AbortController();
     const tid = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const resp = await fetch('/admin/api/invoke', {
+      const resp = await fetch(base + '/api/invoke', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
@@ -154,7 +157,7 @@
       clearTimeout(tid);
       if (!resp.ok) {
         if (resp.status === 401 || resp.status === 302) {
-          window.location.href = '/admin/login';
+          window.location.href = base + '/login';
           throw new Error('Session expired.');
         }
         throw new Error('HTTP ' + resp.status + ': ' + resp.statusText);

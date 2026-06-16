@@ -91,6 +91,35 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# ADMIN_BASE_PATH — configurable URL prefix for the admin console.
+# ---------------------------------------------------------------------------
+# Default is "/admin" for backward-compatibility with existing deployments.
+# Set ADMIN_BASE_PATH=/anki-admin (or any other prefix) to host the entire
+# admin console (pages + API + static assets) under a different path.
+#
+# Normalisation rules:
+#   - Must start with "/"  (leading slash added if missing)
+#   - Must NOT end with "/" (trailing slash stripped)
+#   - Empty string is treated as the default "/admin"
+
+
+def _normalize_base_path(raw: str) -> str:
+    """Normalize ADMIN_BASE_PATH: ensure leading slash, strip trailing slash."""
+    path = raw.strip()
+    if not path:
+        return "/admin"
+    if not path.startswith("/"):
+        path = "/" + path
+    path = path.rstrip("/")
+    return path or "/admin"
+
+
+ADMIN_BASE_PATH: str = _normalize_base_path(
+    os.environ.get("ADMIN_BASE_PATH", "/admin")
+)
+log.info("Admin console URL prefix: %s", ADMIN_BASE_PATH)
+
+# ---------------------------------------------------------------------------
 # Resolve repo-root template and static directories.
 # ---------------------------------------------------------------------------
 # server.py lives at <repo>/src/server.py, so two levels up is <repo>/.
@@ -139,9 +168,15 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)  # type: ignore[metho
 # ---------------------------------------------------------------------------
 # Register the admin blueprint
 # ---------------------------------------------------------------------------
-# The blueprint gates itself at /admin and /admin/* — it does NOT touch
-# POST / (AnkiConnect) or GET /health.
-app.register_blueprint(admin_bp)
+# The blueprint is registered with the configured ADMIN_BASE_PATH prefix.
+# The blueprint's own static folder is mounted at <prefix>/static so that
+# all admin assets (CSS, JS, vendor) live inside the single proxied prefix.
+# With the default ADMIN_BASE_PATH=/admin this is identical to the previous
+# /admin routing, preserving full backward-compatibility.
+app.register_blueprint(admin_bp, url_prefix=ADMIN_BASE_PATH)
+# Expose ADMIN_BASE_PATH on the app config so blueprints and context
+# processors can read it without importing src.server directly.
+app.config["ADMIN_BASE_PATH"] = ADMIN_BASE_PATH
 
 # ---------------------------------------------------------------------------
 # Unified action dispatch table

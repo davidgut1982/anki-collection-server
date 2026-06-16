@@ -4,26 +4,31 @@ A8 DB/media health + A9 diagnostics dashboard.
 
 Routes implemented
 ------------------
-GET  /admin/login       -- Display the login form.
-POST /admin/login       -- Validate token; set ``token`` cookie; redirect to /admin.
-GET  /admin             -- Dashboard landing page.
-GET  /admin/logout      -- Clear the ``token`` cookie; redirect to /admin/login.
-POST /admin/api/invoke  -- Token-gated AnkiConnect action proxy (A6).
-GET  /admin/browse      -- Card/note browser + triage UI (A6).
-GET  /admin/scheduling  -- Deck options + FSRS scheduling panel (A7).
-GET  /admin/maintenance -- Database & media health panel (A8).
-GET  /admin/diagnostics -- Diagnostics dashboard with Chart.js charts (A9).
+GET  <base>/login       -- Display the login form.
+POST <base>/login       -- Validate token; set ``token`` cookie; redirect to <base>.
+GET  <base>/            -- Dashboard landing page.
+GET  <base>/logout      -- Clear the ``token`` cookie; redirect to <base>/login.
+POST <base>/api/invoke  -- Token-gated AnkiConnect action proxy (A6).
+GET  <base>/browse      -- Card/note browser + triage UI (A6).
+GET  <base>/scheduling  -- Deck options + FSRS scheduling panel (A7).
+GET  <base>/maintenance -- Database & media health panel (A8).
+GET  <base>/diagnostics -- Diagnostics dashboard with Chart.js charts (A9).
+
+Where <base> is controlled by the ``ADMIN_BASE_PATH`` environment variable
+(default ``/admin``).  The blueprint is registered with ``url_prefix=<base>``
+in server.py; routes in this file are prefix-relative (no leading /admin in
+the route strings here).
 
 Auth guard
 ----------
 ``check_admin_auth()`` is wired as a ``before_request`` hook on the blueprint.
 The login route (and its POST) is explicitly exempted.
 
-/admin/api/invoke design
-------------------------
+/api/invoke design
+------------------
 The browser never hits the raw unauthenticated ``POST /`` AnkiConnect endpoint.
 Instead, every admin page uses ``acsInvoke(action, params)`` in admin.js which
-calls ``POST /admin/api/invoke``.  This route is gated by the same
+calls ``POST <base>/api/invoke``.  This route is gated by the same
 ``before_request`` auth hook as all other admin routes.  It imports the merged
 ``DISPATCH`` table from ``src.server`` and dispatches the action under the
 collection lock -- exactly what ``POST /`` does, but token-gated.
@@ -35,16 +40,25 @@ lock acquire -- safe under contention.
 
 The invoke proxy acquires ``_col_lock`` (same lock as the AnkiConnect handler)
 before calling each action handler.
+
+Static assets
+-------------
+The blueprint owns its own static_folder so admin assets (CSS, JS, vendor)
+are served under ``<base>/static/admin/...`` rather than the app-level
+``/static/admin/...``.  This keeps all admin traffic inside the single
+proxied prefix path.
 """
 
 from __future__ import annotations
 
 import logging
 import traceback
+from pathlib import Path
 from typing import Any, Optional
 
 from flask import (
     Blueprint,
+    current_app,
     jsonify,
     make_response,
     redirect,
@@ -68,29 +82,66 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Blueprint definition
 # ---------------------------------------------------------------------------
-# template_folder and static_folder are relative to THIS file's directory.
-# Flask resolves them to:
-#   src/admin/../../templates  ->  <repo>/templates
-#   src/admin/../../static     ->  <repo>/static
+# The blueprint is registered WITHOUT a url_prefix here; the prefix is
+# supplied by server.py via ``app.register_blueprint(admin_bp, url_prefix=...)``.
+# This keeps the prefix as a single, authoritative setting in server.py.
 #
-# We use app-level template/static dirs (set in server.py) rather than
-# per-blueprint dirs so the layout stays at the repo root and Jinja2's
-# template inheritance ({% extends "admin/base.html" %}) works without any
-# blueprint URL prefix tricks.
+# Blueprint static_folder: admin assets live in <repo>/static/admin/.
+# We mount them under the static_url_path="" so that Flask serves them at
+# ``<url_prefix>/static/admin/...`` when the blueprint is registered.
+# The Jinja2 url_for('admin.static', filename='admin/admin.css') call then
+# resolves to the configured prefix automatically — no hardcoded paths.
+#
+# template_folder: we still rely on the app-level template dir (set in
+# server.py) for Jinja2 template inheritance, so we leave template_folder
+# unset on the blueprint.  Templates reference each other via
+# "admin/base.html" which Flask resolves from the app template dir.
+_ADMIN_STATIC_FOLDER = str(Path(__file__).parent.parent.parent / "static")
+
 admin_bp = Blueprint(
     "admin",
     __name__,
-    url_prefix="/admin",
+    static_folder=_ADMIN_STATIC_FOLDER,
+    static_url_path="/static",
+    # url_prefix is intentionally NOT set here; it is injected by server.py
+    # at registration time via register_blueprint(..., url_prefix=ADMIN_BASE_PATH).
 )
+
+
+# ---------------------------------------------------------------------------
+# Context processor — inject admin_base into every template rendered by this
+# blueprint so that templates and inline JS can reference the base path.
+# ---------------------------------------------------------------------------
+
+@admin_bp.context_processor
+def _inject_admin_base() -> dict[str, str]:
+    """Make ``admin_base`` available in all admin blueprint templates.
+
+    ``admin_base`` is the URL prefix (e.g. "/admin" or "/anki-admin") without
+    a trailing slash.  Templates inject it into JS via::
+
+        <script>window.ADMIN_BASE = "{{ admin_base }}";</script>
+
+    so that JS fetch calls and redirects use the correct prefix regardless
+    of how the server is deployed.
+    """
+    base: str = current_app.config.get("ADMIN_BASE_PATH", "/admin")
+    return {"admin_base": base}
 
 # ---------------------------------------------------------------------------
 # Auth guard -- before every admin request
 # ---------------------------------------------------------------------------
 
 # Endpoints that do NOT require authentication.
-# Both the GET (login form) and the POST (login submission) are exempt so
-# that the user can reach and use the login form before they have a token.
-_EXEMPT_ENDPOINTS: frozenset[str] = frozenset({"admin.login", "admin.login_post"})
+# - admin.login / admin.login_post: the login form (user has no token yet).
+# - admin.static: blueprint static assets (CSS, JS) must be reachable before
+#   authentication so the login page can load its stylesheet and scripts.
+#   Static files contain no sensitive data; they are safe to serve publicly.
+_EXEMPT_ENDPOINTS: frozenset[str] = frozenset({
+    "admin.login",
+    "admin.login_post",
+    "admin.static",
+})
 
 
 @admin_bp.before_request
@@ -172,6 +223,10 @@ def login_post() -> Any:
     # Successful login -- reset the failure counter for this IP.
     _ratelimit_reset(ip)
     log.info("Admin login: successful from %s", ip)
+    # Cookie path: use the admin base path so the token cookie is scoped to
+    # the admin console prefix.  This prevents the cookie from being sent to
+    # unrelated paths and keeps it within the proxied subtree.
+    cookie_path: str = current_app.config.get("ADMIN_BASE_PATH", "/admin")
     response = make_response(redirect(url_for("admin.index")))
     response.set_cookie(
         "token",
@@ -179,6 +234,7 @@ def login_post() -> Any:
         httponly=True,
         samesite="Strict",
         secure=True,
+        path=cookie_path,
         # max_age omitted -> session cookie (cleared when browser closes)
     )
     return response

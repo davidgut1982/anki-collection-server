@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Admin Login — Anki Collection Server</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='admin/admin.css') }}">
+  <link rel="stylesheet" href="{{ url_for('admin.static', filename='admin/admin.css') }}">
 </head>
 <body class="login-body">
   <div class="login-card">
@@ -33,5 +33,7 @@
       Token is set via the <code>ADMIN_TOKEN</code> environment variable.
     </p>
   </div>
+  {# Expose the admin base path to JS (used by any inline scripts on this page) #}
+  <script>window.ADMIN_BASE = "{{ admin_base }}";</script>
 </body>
 </html>
